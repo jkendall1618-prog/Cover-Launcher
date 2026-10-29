@@ -177,6 +177,8 @@ fun SettingsScreen(prefs: Prefs, hb: Homebase, claude: Claude, tick: Int, onBack
             }
         }
 
+        TakeoverTile(tick + perm)
+
         Tile(label = "homebase") {
             if (signedIn) {
                 T("signed in · ${hb.email ?: ""}", color = Tn.green, maxLines = 1)
@@ -216,6 +218,57 @@ fun SettingsScreen(prefs: Prefs, hb: Homebase, claude: Claude, tick: Int, onBack
         }
 
         T("cover v${ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName}", color = Tn.dim, size = 11)
+    }
+}
+
+// ---------- takeover ----------
+
+@Composable
+fun TakeoverTile(refresh: Int) {
+    val ctx = LocalContext.current
+    val watchOn = remember(refresh) { Takeover.serviceOn(ctx) }
+    val recent = remember(refresh) { Takeover.recent(ctx) }
+    var on by remember { mutableStateOf(Takeover.enabled(ctx)) }
+    var target by remember { mutableStateOf(Takeover.target(ctx)) }
+
+    fun name(s: Seen): String {
+        val pm = ctx.packageManager
+        val app = runCatching { pm.getApplicationLabel(pm.getApplicationInfo(s.pkg, 0)).toString() }
+            .getOrDefault(s.pkg)
+        return "${app.lowercase()} · ${s.shortCls.ifBlank { "?" }} · screen ${s.display}"
+    }
+
+    Tile(label = "takeover") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            T("service   ")
+            if (watchOn) T("on", color = Tn.green)
+            else T("open settings", Modifier.clickable {
+                ctx.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }, color = Tn.yellow)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            T("takeover  ")
+            T(if (on) "on" else "off", Modifier.clickable {
+                on = !on
+                Takeover.setEnabled(ctx, on)
+            }, color = if (on) Tn.green else Tn.dim)
+        }
+        Spacer(Modifier.height(4.dp))
+        T("replaces:", color = Tn.dim, size = 11)
+        T(target?.let(::name) ?: "not set yet", color = if (target != null) Tn.purple else Tn.yellow, size = 11, maxLines = 2)
+        if (target != null) T("clear", Modifier.clickable { Takeover.setTarget(ctx, null); target = null }.padding(vertical = 2.dp), color = Tn.dim, size = 11)
+
+        Spacer(Modifier.height(6.dp))
+        T("to pick: go to samsung's cover home, open cover again, tap the samsung home line below", color = Tn.dim, size = 11)
+        if (!watchOn) T("(turn the service on first, or nothing gets listed)", color = Tn.dim, size = 11)
+        recent.take(8).forEach { s ->
+            Row(
+                Modifier.fillMaxWidth().clickable { Takeover.setTarget(ctx, s); target = s }.padding(vertical = 3.dp),
+            ) {
+                T(if (s == target) "❯ " else "  ", color = Tn.orange, size = 11)
+                T(name(s), size = 11, maxLines = 1)
+            }
+        }
     }
 }
 

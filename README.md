@@ -28,9 +28,16 @@ Typing `ask` or `cover settings` in the grid works too.
 
 Every push to `main` rebuilds the APK and replaces the `latest` release. Updates install over the top because the signing key is fixed (`keys/debug.keystore`, a personal sideload key, not a Play Store key).
 
+## Takeover (cover as the cover screen's home)
+
+An accessibility service (`cover takeover`) brings cover back in front whenever the window you pick as Samsung's cover home appears on the cover screen. It reads only app and window-class names, never screen content, and does nothing over the lock screen.
+
+1. App info → ⋮ → **Allow restricted settings** (Android blocks accessibility for sideloaded apps until you do this).
+2. Settings → Accessibility → Installed apps → **cover takeover** → on.
+3. Go to Samsung's cover home once, open cover again, `● cfg` → takeover, and tap the Samsung home line.
+
 ## Later
 
-- Overlay mode (take over the cover screen when it wakes, like CoverScreen OS)
 - More Omarchy themes (Gruvbox, Kanagawa, Matte Black…)
 
 Font: JetBrains Mono, SIL Open Font License 1.1 (see `FONT-LICENSE.txt`).

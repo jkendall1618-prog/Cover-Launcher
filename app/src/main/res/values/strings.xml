@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="watch_desc">Brings cover back in front whenever Samsung\'s cover home appears, so cover acts as your cover screen\'s home. It only sees which app is in front, never what\'s on the screen.</string>
+</resources>
