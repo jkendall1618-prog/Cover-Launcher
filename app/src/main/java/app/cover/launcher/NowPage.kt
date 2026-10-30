@@ -55,7 +55,10 @@ import kotlin.random.Random
 // Page 4 ("now"): swipe down from page 1. The playing album's cover redrawn as block glyphs,
 // with a visualiser that takes its colours, resting shape and movement from that cover.
 
-private const val COLS = 28
+private const val COLS = 56
+
+/** Visualiser bars: one under every two columns of the cover, so they stay thick enough to read. */
+private const val BARS = COLS / 2
 private val GLYPHS = listOf("░", "▒", "▓", "█")
 
 /** The cover cut into a COLS × rows grid, reduced to what page 4 draws. */
@@ -65,9 +68,9 @@ class AsciiCover(
     val level: IntArray,
     /** Per cell, the nearest Tokyo Night colour. */
     val color: Array<Color>,
-    /** Per column, 0..1: the bars' resting height, i.e. the cover's skyline. */
+    /** Per bar, 0..1: the bars' resting height, i.e. the cover's skyline. */
     val base: FloatArray,
-    /** Per column: the cover's strongest colour in that column. */
+    /** Per bar: the cover's strongest colour in the two columns above it. */
     val barColor: Array<Color>,
     /** Dark, flat covers move slowly and smoothly; bright, busy ones fast and jittery. */
     val speed: Float,
@@ -113,8 +116,8 @@ class AsciiCover(
             rows = rows,
             level = IntArray(COLS * rows),
             color = Array(COLS * rows) { Mb.border },
-            base = FloatArray(COLS) { 0.3f },
-            barColor = Array(COLS) { Tn.purple },
+            base = FloatArray(BARS) { 0.3f },
+            barColor = Array(BARS) { Tn.purple },
             speed = 0.14f,
             amp = 0.14f,
             jitter = 0.04f,
@@ -177,15 +180,17 @@ class AsciiCover(
                 }
             }
 
-            // Skyline: each column's average brightness, spread over 0.15..0.75.
-            val prof = FloatArray(COLS) { x -> (0 until rows).map { v[it * COLS + x] }.average().toFloat() }
+            // Skyline: the average brightness under each bar (two columns), spread over 0.15..0.75.
+            val prof = FloatArray(BARS) { bi ->
+                (0 until rows).flatMap { listOf(v[it * COLS + 2 * bi], v[it * COLS + 2 * bi + 1]) }.average().toFloat()
+            }
             val pLo = prof.min()
             val pSpan = (prof.max() - pLo).coerceAtLeast(0.05f)
-            val base = FloatArray(COLS) { 0.15f + 0.6f * (prof[it] - pLo) / pSpan }
+            val base = FloatArray(BARS) { 0.15f + 0.6f * (prof[it] - pLo) / pSpan }
 
-            // Each bar takes the brightest coloured cell in its column, else its brightest cell of any kind.
-            val barColor = Array(COLS) { x ->
-                val cells = (0 until rows).map { it * COLS + x }
+            // Each bar takes the brightest coloured cell above it, else the brightest cell of any kind.
+            val barColor = Array(BARS) { bi ->
+                val cells = (0 until rows).flatMap { listOf(it * COLS + 2 * bi, it * COLS + 2 * bi + 1) }
                 val pick = cells.filter { chroma[it] }.maxByOrNull { v[it] } ?: cells.maxByOrNull { v[it] }!!
                 color[pick].let { if (it == Tn.border) Tn.dim else it }
             }
@@ -199,7 +204,8 @@ class AsciiCover(
                 if (y + 1 < rows) { diff += abs(v[i] - v[i + COLS]); pairs++ }
             }
             val energy = if (pairs == 0) 0f else diff / pairs
-            val t = (0.6f * min(1f, energy * 3f) + 0.4f * lum.average().toFloat()).coerceIn(0f, 1f)
+            // Finer grids have smaller steps between neighbours, so scale back to the 28-column calibration.
+            val t = (0.6f * min(1f, energy * 3f * (COLS / 28f)) + 0.4f * lum.average().toFloat()).coerceIn(0f, 1f)
 
             return AsciiCover(
                 rows = rows,
@@ -271,13 +277,13 @@ fun NowPage(active: () -> Boolean, onHome: () -> Unit) {
     val hasAccess = remember { Media.hasAccess(ctx) }
     var track by remember { mutableStateOf<Track?>(null) }
     var cover by remember { mutableStateOf<AsciiCover?>(null) }
-    var bars by remember { mutableStateOf(FloatArray(COLS) { 0.05f }) }
+    var bars by remember { mutableStateOf(FloatArray(BARS) { 0.05f }) }
 
     // Cell shape comes from the font itself, so a square cover stays square.
     val tm = rememberTextMeasurer()
     val probe = remember(tm) { tm.measure("█", TextStyle(fontFamily = Mono, fontSize = 10.sp)) }
     val rows = remember(probe) {
-        (COLS * probe.size.width.toFloat() / probe.size.height).roundToInt().coerceIn(8, 20)
+        (COLS * probe.size.width.toFloat() / probe.size.height).roundToInt().coerceIn(8, 40)
     }
 
     // What's playing, twice a second while on screen. The cover is rebuilt only when the track changes;
@@ -313,19 +319,19 @@ fun NowPage(active: () -> Boolean, onHome: () -> Unit) {
     LaunchedEffect(cover, playing) {
         val c = cover ?: AsciiCover.blank(rows)
         val rnd = Random(c.seed)
-        val drift = FloatArray(COLS) { rnd.nextFloat() * 0.6f }
+        val drift = FloatArray(BARS) { rnd.nextFloat() * 0.6f }
         var ph = 0f
         while (true) {
             if (active()) {
                 val prev = bars
                 bars = if (playing) {
                     ph += c.speed
-                    FloatArray(COLS) { i ->
+                    FloatArray(BARS) { i ->
                         val wave = sin(i * 0.6f + ph + drift[i]) * 0.6f + sin(i * 1.7f - ph * 1.3f) * 0.4f
                         (c.base[i] + c.amp * wave + c.jitter * (rnd.nextFloat() - 0.5f)).coerceIn(0.03f, 1f)
                     }
                 } else {
-                    FloatArray(COLS) { i -> prev[i] + (c.base[i] * 0.35f - prev[i]) * 0.25f }
+                    FloatArray(BARS) { i -> prev[i] + (c.base[i] * 0.35f - prev[i]) * 0.25f }
                 }
             }
             delay(110)
@@ -345,8 +351,9 @@ fun NowPage(active: () -> Boolean, onHome: () -> Unit) {
 
         // Cover and visualiser share one column grid, so each bar sits under its own slice of the art.
         BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-            val visRows = 1.6f
-            val gapRows = 0.5f
+            // In cover rows, which are half as tall since the grid doubled: same physical size as before.
+            val visRows = 3.2f
+            val gapRows = 1f
             val w10 = probe.size.width.toFloat()
             val h10 = probe.size.height.toFloat()
             val scale = min(
@@ -376,15 +383,16 @@ fun NowPage(active: () -> Boolean, onHome: () -> Unit) {
                 Spacer(Modifier.height(with(density) { (ch * gapRows).toDp() }))
                 Canvas(Modifier.size(artW, with(density) { (ch * visRows).toDp() })) {
                     val colors = cover?.barColor
-                    val bw = cw * 0.78f
+                    val slot = cw * 2f
+                    val bw = slot * 0.78f
                     val levels = bars
-                    for (x in 0 until COLS) {
+                    for (x in 0 until BARS) {
                         // Eighth steps, like ▁▂▃▄▅▆▇█.
                         val steps = (levels[x] * 8f).toInt().coerceIn(1, 8)
                         val hh = size.height * steps / 8f
                         drawRect(
                             color = colors?.getOrNull(x) ?: Tn.purple,
-                            topLeft = Offset(x * cw + (cw - bw) / 2f, size.height - hh),
+                            topLeft = Offset(x * slot + (slot - bw) / 2f, size.height - hh),
                             size = Size(bw, hh),
                         )
                     }
