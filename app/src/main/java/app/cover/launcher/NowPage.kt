@@ -225,20 +225,23 @@ class AsciiCover(
 /**
  * A deliberate vertical swipe: at least 56dp, and at least twice as far up or down as sideways.
  * It watches without consuming until it's sure, so key taps and sideways page swipes behave as before.
- * Touches that start within [skipTop] of the top are ignored, leaving One UI's pull-down panel alone.
+ * Touches that start within [skipTop] of the top or [skipBottom] of the bottom are ignored,
+ * leaving One UI's own edge swipes alone.
  * [onSwipe] is captured once, so it should only set remembered state.
  */
 fun Modifier.verticalSwipe(
     down: Boolean,
     enabled: Boolean = true,
     skipTop: Dp = 0.dp,
+    skipBottom: Dp = 0.dp,
     onSwipe: () -> Unit,
-): Modifier = if (!enabled) this else pointerInput(down, skipTop) {
+): Modifier = if (!enabled) this else pointerInput(down, skipTop, skipBottom) {
     val trigger = 56.dp.toPx()
     val top = skipTop.toPx()
+    val bottom = skipBottom.toPx()
     awaitEachGesture {
         val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-        if (first.position.y < top) return@awaitEachGesture
+        if (first.position.y < top || first.position.y > size.height - bottom) return@awaitEachGesture
         var dx = 0f
         var dy = 0f
         while (true) {

@@ -183,6 +183,8 @@ fun SettingsScreen(prefs: Prefs, hb: Homebase, claude: Claude, tick: Int, onBack
 
         SignalTile()
 
+        OutTile(prefs, tick)
+
         Tile(label = "homebase") {
             if (signedIn) {
                 T("signed in · ${hb.email ?: ""}", color = Tn.green, maxLines = 1)

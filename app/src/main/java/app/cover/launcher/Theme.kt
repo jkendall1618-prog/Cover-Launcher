@@ -58,6 +58,22 @@ object Mb {
     val border = Color(0xFF2A2A2D)
 }
 
+/** Gruvbox dark for page 5, the last Omarchy palette not yet on a page. */
+object Gb {
+    val bg = Color(0xFF282828)
+    val bg1 = Color(0xFF3C3836)
+    val bg2 = Color(0xFF504945)
+    val fg = Color(0xFFEBDBB2)
+    val gray = Color(0xFF928374)
+    val red = Color(0xFFFB4934)
+    val green = Color(0xFFB8BB26)
+    val yellow = Color(0xFFFABD2F)
+    val blue = Color(0xFF83A598)
+    val purple = Color(0xFFD3869B)
+    val aqua = Color(0xFF8EC07C)
+    val orange = Color(0xFFFE8019)
+}
+
 val Mono = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
     Font(R.font.jetbrains_mono_medium, FontWeight.Medium),

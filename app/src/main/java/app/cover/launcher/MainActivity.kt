@@ -7,6 +7,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.view.Display
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -60,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -69,7 +71,10 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-enum class Screen { HOME, CHAT, SETTINGS, PEOPLE, SHOP, BRIEF, NOW }
+enum class Screen { HOME, CHAT, SETTINGS, PEOPLE, SHOP, BRIEF, NOW, OUT, MUSIC }
+
+/** Screens that slide over the pager rather than replacing it. */
+private val OVERLAYS = setOf(Screen.NOW, Screen.OUT, Screen.MUSIC)
 
 private val PAGE2_SCREENS = setOf(Screen.PEOPLE, Screen.SHOP, Screen.BRIEF)
 
@@ -86,11 +91,30 @@ class MainActivity : ComponentActivity() {
         if (closeIfOnInnerScreen(intent)) return
         setShowWhenLocked(SignalLock.overLock(this))
         setContent { CoverApp(this, resumeTick.intValue) }
+        handleSpotify(intent)
+    }
+
+    /** Spotify sends you back here after you approve cover in the browser. */
+    private fun handleSpotify(i: Intent?) {
+        val uri = i?.data
+        if (!Spotify.isCallback(uri) || uri == null) return
+        val prefs = Prefs(this)
+        lifecycleScope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { Spotify.finish(prefs, uri) } }
+            Toast.makeText(
+                this@MainActivity,
+                if (r.isSuccess) "spotify connected" else r.exceptionOrNull()?.message ?: "spotify sign-in failed",
+                Toast.LENGTH_LONG,
+            ).show()
+            if (r.isSuccess) refreshMusic(this@MainActivity, prefs)
+            resumeTick.intValue++
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleSpotify(intent)
         // Icon tapped on purpose (not the takeover): wherever we are now is where you want us.
         if (!intent.getBooleanExtra(EXTRA_TAKEOVER, false)) {
             lastDisplay = Display.INVALID_DISPLAY
@@ -253,8 +277,8 @@ fun CoverApp(act: MainActivity, tick: Int) {
         // Back after a while away: open on page 1, like a home screen. A quick hop out
         // (a timer, Spotify, Wallet) returns to wherever you were.
         if (screen == Screen.HOME && act.awayFor() > 30_000L) pager.scrollToPage(1)
-        // Page 4 is a page, not a screen you were working in: same rule.
-        if (screen == Screen.NOW && act.awayFor() > 30_000L) screen = Screen.HOME
+        // Pages 4 and 5 are pages, not screens you were working in: same rule.
+        if (screen in OVERLAYS && act.awayFor() > 30_000L) screen = Screen.HOME
         refresh()
     }
 
@@ -293,6 +317,7 @@ fun CoverApp(act: MainActivity, tick: Int) {
 
     BackHandler(enabled = !lockView && (screen != Screen.HOME || query.isNotEmpty() || pager.currentPage != 1)) {
         when {
+            screen == Screen.MUSIC -> screen = Screen.OUT
             screen != Screen.HOME -> screen = Screen.HOME
             query.isNotEmpty() -> query = ""
             else -> scope.launch { pager.animateScrollToPage(1) }
@@ -335,7 +360,7 @@ fun CoverApp(act: MainActivity, tick: Int) {
             })
             Screen.BRIEF -> BriefScreen(brief, briefBusy, briefError, onBack = { screen = Screen.HOME }, onAgain = { runBrief() })
             // Page 4 slides down over the pager, which stays put underneath.
-            Screen.HOME, Screen.NOW -> HorizontalPager(
+            Screen.HOME, Screen.NOW, Screen.OUT, Screen.MUSIC -> HorizontalPager(
                 state = pager,
                 modifier = Modifier.fillMaxSize(),
                 pageSpacing = 16.dp,
@@ -358,6 +383,10 @@ fun CoverApp(act: MainActivity, tick: Int) {
                     // Swipe down for page 4. Not while typing, and not from the very top, which is One UI's.
                     .verticalSwipe(down = true, enabled = query.isEmpty() && screen == Screen.HOME, skipTop = 24.dp) {
                         screen = Screen.NOW
+                    }
+                    // Swipe up for page 5. Not from the very bottom edge either.
+                    .verticalSwipe(down = false, enabled = query.isEmpty() && screen == Screen.HOME, skipBottom = 24.dp) {
+                        screen = Screen.OUT
                     },
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
@@ -423,6 +452,32 @@ fun CoverApp(act: MainActivity, tick: Int) {
                 .verticalSwipe(down = false) { screen = Screen.HOME }
         ) {
             NowPage(active = { act.isVisible }, onHome = { screen = Screen.HOME })
+        }
+    }
+    // Page 5: out there, in Gruvbox, rising from below. Swipe down (or back) to leave; music opens full page.
+    AnimatedVisibility(
+        visible = !lockView && (screen == Screen.OUT || screen == Screen.MUSIC),
+        enter = slideInVertically(tween(220)) { it },
+        exit = slideOutVertically(tween(200)) { it },
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Gb.bg)
+                .safeDrawingPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .verticalSwipe(down = true, enabled = screen == Screen.OUT, skipTop = 24.dp) { screen = Screen.HOME }
+        ) {
+            if (screen == Screen.MUSIC) {
+                MusicScreen(act, prefs, onBack = { screen = Screen.OUT })
+            } else {
+                OutPage(
+                    act, prefs, now,
+                    active = { act.isVisible },
+                    onHome = { screen = Screen.HOME },
+                    onMusic = { screen = Screen.MUSIC },
+                )
+            }
         }
     }
     }

@@ -56,5 +56,24 @@ class Prefs(context: Context) {
         fun dialLabel(i: Int) = "dial_label_$i"
         fun dialUri(i: Int) = "dial_uri_$i"
         val DIAL_DEFAULTS = listOf("Jac", "Mum", "Dad")
+
+        // Page 5 ("out there")
+        const val FUEL_TOKEN = "fuel_token"
+        const val FUEL_ID = "fuel_id"
+        const val FUEL_SITES = "fuel_sites"
+        const val FUEL_SITES_AT = "fuel_sites_at"
+        const val FUEL_HIST = "fuel_hist"
+        const val TOMTOM_KEY = "tomtom_key"
+        const val WORK_ADDR = "work_addr"
+        const val WORK_LL = "work_ll"
+        const val QLDT_KEY = "qldt_key"
+        const val TM_KEY = "tm_key"
+        const val SP_CLIENT = "sp_client"
+        const val SP_VERIFIER = "sp_verifier"
+        const val SP_ACCESS = "sp_access"
+        const val SP_REFRESH = "sp_refresh"
+        const val SP_EXPIRES = "sp_expires"
+        const val SP_ARTISTS = "sp_artists"
+        const val MUSIC_JSON = "music_json"
     }
 }

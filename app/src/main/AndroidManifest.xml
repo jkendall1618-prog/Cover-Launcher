@@ -17,6 +17,8 @@
     <queries>
         <package android:name="com.spotify.music" />
         <package android:name="com.google.android.apps.walletnfcrel" />
+        <!-- Page 5: fuel and drive taps start navigation in Google Maps. -->
+        <package android:name="com.google.android.apps.maps" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -44,6 +46,13 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Page 5: where Spotify sends you back after approving cover. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="coverlauncher" android:host="spotify" android:path="/callback" />
             </intent-filter>
         </activity>
 

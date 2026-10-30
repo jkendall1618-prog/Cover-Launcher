@@ -63,10 +63,33 @@ One Signal chat as a terminal-style log, in jade on black. Signal has no API for
 
 Whatever's playing, with the album cover redrawn as `░▒▓█` blocks in Tokyo Night colours, on near-black. Swipe up, tap `↑ home` or press back to return. Like page 2, cover reopens on page 1 after 30 seconds away.
 
-- **The visualiser comes from the cover, not the audio.** Each bar sits under its own column of the art and rests at that column's brightness, so the bars trace the cover's outline. Each bar takes the strongest colour in its column. Dark, flat covers swell slowly; bright, busy ones move fast and jittery. The same album always moves the same way.
+- **The visualiser comes from the cover, not the audio.** Each bar sits under its own two columns of the art and rests at their brightness, so the bars trace the cover's outline. Each bar takes the strongest colour above it. Dark, flat covers swell slowly; bright, busy ones move fast and jittery. The same album always moves the same way.
 - It doesn't follow the beat: Spotify doesn't share its audio or tempo data with other apps. When paused, the bars settle into a faint copy of the outline.
 - The art is the image the playing app gives Android for its media controls. Nothing is downloaded. If an app sends none, you get an empty grid and a plain purple pulse.
 - Uses the media access you've already granted. The swipe down doesn't count if it starts at the very top edge (that's One UI's pull-down panel) or while you're typing in the launch grid.
+
+## Page 5: out there (swipe up from page 1)
+
+Gruvbox, four quarters. Swipe down, tap `home ↓` or press back to return. Reopens on page 1 after 30 seconds away. The swipe up doesn't count from the very bottom edge.
+
+| Quarter | What it does |
+| --- | --- |
+| fuel · u91 | three nearby servos (within 10 km of home). `★` in green is the recommendation: cheapest once the drive there and back is costed (40 L fill, 8 L/100 km). `$` marks the outright cheapest when it's a different one. Tap a row to navigate there in Google Maps; tap the quarter to go to the `★`. `cycle` compares today's local prices with a few days ago (needs a few days of history first). |
+| drive · work | live drive time to work and how much traffic is adding · crashes within ~300 m of the route, from QLDTraffic. Tap to navigate. |
+| music ↗ | next Queensland gig by an artist you follow, and their newest release. Tap for the full music page: every gig (tap for tickets) and the last 30 days of releases (tap to play). |
+| progress | day, week, month and year as filling bars. |
+
+Fuel refreshes every 30 min, the drive every 10, music twice a day; nothing runs while page 5 isn't on screen.
+
+**Setup** (`● cfg` → page 5 · out there; easiest on the main screen):
+
+1. **fuel**: register as a data consumer via fuelpricesqld.com.au (free). Paste the subscriber token.
+2. **tomtom**: free account at developer.tomtom.com (no card). Paste the API key. Then type your **work** address.
+3. **qldtraffic**: optional. Cover uses QLDTraffic's published public key; if crashes stop showing, email qldtraffic@tmr.qld.gov.au for your own and paste it.
+4. **ticketmstr**: free account at developer.ticketmaster.com. Paste the consumer key. Only Ticketmaster-sold shows appear; Oztix and Moshtix gigs won't.
+5. **spotify**: create an app at developer.spotify.com (Web API), add `coverlauncher://spotify/callback` as a redirect URI, paste the client ID, then tap **connect spotify** and approve. Cover reads the artists you follow and nothing else.
+
+Gigs use the artists you follow on Spotify, so they appear once Spotify is connected.
 
 ## Takeover (cover as the cover screen's home)
 
@@ -77,9 +100,5 @@ An accessibility service (`cover takeover`) brings cover back in front whenever 
 3. Go to Samsung's cover home once, open cover again, `● cfg` → takeover, and tap the Samsung home line.
 
 Cover stays off the main screen: it closes itself when unfolding carries it onto the inner display, and the takeover ignores screen 0 even if it was picked. Tapping the cover icon on the main screen on purpose still opens it, so `● cfg` is always reachable there.
-
-## Later
-
-- More Omarchy themes (Gruvbox…)
 
 Font: JetBrains Mono, SIL Open Font License 1.1 (see `FONT-LICENSE.txt`).

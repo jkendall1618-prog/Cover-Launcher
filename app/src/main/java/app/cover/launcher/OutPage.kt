@@ -1,0 +1,427 @@
+package app.cover.launcher
+
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.util.Locale
+import kotlin.math.roundToInt
+
+// Page 5 ("out there"): swipe up from page 1. Gruvbox, four quarters: fuel, drive, music, progress.
+
+private val DAY = DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH)
+private val HM = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
+
+private fun f1(x: Double) = String.format(Locale.ROOT, "%.1f", x)
+
+private fun ago(d: LocalDate): String = when (val n = ChronoUnit.DAYS.between(d, LocalDate.now())) {
+    0L -> "today"
+    1L -> "yesterday"
+    else -> "$n days ago"
+}
+
+private fun agoShort(d: LocalDate): String = ChronoUnit.DAYS.between(d, LocalDate.now()).let { if (it <= 0) "now" else "${it}d" }
+
+/** Turn-by-turn straight away, no route preview. On the cover screen when Maps is allowed there. */
+fun navigate(act: Activity, lat: Double, lng: Double) {
+    val i = Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$lat,$lng&mode=d")).setPackage("com.google.android.apps.maps")
+    if (!Actions.startHere(act, i)) Toast.makeText(act, "google maps not found", Toast.LENGTH_SHORT).show()
+}
+
+private fun openUrl(act: Activity, url: String) {
+    if (url.isBlank() || !Actions.startHere(act, Intent(Intent.ACTION_VIEW, Uri.parse(url)))) {
+        Toast.makeText(act, "couldn't open that", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Plays through Spotify's session if it allows, otherwise opens the release in Spotify. */
+private fun play(act: Activity, uri: String) {
+    val u = Uri.parse(uri)
+    if (Media.playFromUri(act, Actions.SPOTIFY, u)) return
+    if (!Actions.startHere(act, Intent(Intent.ACTION_VIEW, u).setPackage(Actions.SPOTIFY))) {
+        Toast.makeText(act, "spotify not found", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Fetches releases and gigs in the background; survives the page closing. */
+fun refreshMusic(act: MainActivity, prefs: Prefs) {
+    if (Out.musicBusy) return
+    Out.musicBusy = true
+    act.lifecycleScope.launch {
+        try {
+            val m = withContext(Dispatchers.IO) { MusicFeed.refresh(prefs) }
+            // Nothing came back and something failed: try again in half an hour, not twelve.
+            Out.music = if (m.error != null && m.releases.isEmpty() && m.gigs.isEmpty()) {
+                m.copy(at = m.at - Out.MUSIC_EVERY + 30 * 60_000L)
+            } else {
+                m
+            }
+        } finally {
+            Out.musicBusy = false
+        }
+    }
+}
+
+private data class Bar(val label: String, val fraction: Double, val color: Color)
+
+private fun progress(now: LocalDateTime): List<Bar> {
+    val day = now.toLocalTime().toSecondOfDay() / 86_400.0
+    val week = (now.dayOfWeek.value - 1 + day) / 7.0
+    val month = (now.dayOfMonth - 1 + day) / now.toLocalDate().lengthOfMonth()
+    val year = (now.dayOfYear - 1 + day) / now.toLocalDate().lengthOfYear()
+    return listOf(
+        Bar("day", day, Gb.blue),
+        Bar("week", week, Gb.aqua),
+        Bar("month", month, Gb.yellow),
+        Bar("year", year, Gb.orange),
+    )
+}
+
+@Composable
+private fun Quad(
+    label: String,
+    modifier: Modifier,
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val shape = RoundedCornerShape(6.dp)
+    var m = modifier.fillMaxHeight().clip(shape).border(1.dp, Gb.bg1, shape)
+    if (onClick != null) m = m.clickable(onClick = onClick)
+    Column(m.padding(horizontal = 8.dp, vertical = 6.dp)) {
+        T(label, color = Gb.gray, size = 11, maxLines = 1)
+        Spacer(Modifier.height(2.dp))
+        content()
+    }
+}
+
+@Composable
+fun OutPage(
+    act: MainActivity,
+    prefs: Prefs,
+    now: LocalDateTime,
+    active: () -> Boolean,
+    onHome: () -> Unit,
+    onMusic: () -> Unit,
+) {
+    // Fuel every 30 min, the drive every 10, music twice a day; failures retry after a couple of minutes.
+    LaunchedEffect(Unit) {
+        if (Out.music == null) Out.music = withContext(Dispatchers.IO) { MusicFeed.cached(prefs) }
+        while (true) {
+            if (active()) {
+                val t = System.currentTimeMillis()
+                if (t - Out.fuelAt > Out.FUEL_EVERY) {
+                    Out.fuelAt = t
+                    val r = withContext(Dispatchers.IO) { runCatching { Fuel.load(prefs) } }
+                    if (r.isFailure) Out.fuelAt = t - Out.FUEL_EVERY + 120_000L
+                    if (r.isSuccess || Out.fuel?.isSuccess != true) Out.fuel = r
+                }
+                if (t - Out.driveAt > Out.DRIVE_EVERY) {
+                    Out.driveAt = t
+                    val r = withContext(Dispatchers.IO) { runCatching { Drive.load(prefs) } }
+                    if (r.isFailure) Out.driveAt = t - Out.DRIVE_EVERY + 120_000L
+                    if (r.isSuccess || Out.drive?.isSuccess != true) Out.drive = r
+                }
+                val m = Out.music
+                if (m == null || t - m.at > Out.MUSIC_EVERY) refreshMusic(act, prefs)
+            }
+            delay(20_000)
+        }
+    }
+
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            T("~/out-there", color = Gb.gray, size = 11)
+            Spacer(Modifier.weight(1f))
+            T(now.format(HM), color = Gb.fg, size = 12)
+            Spacer(Modifier.weight(1f))
+            T("home ↓", Modifier.clickable(onClick = onHome).padding(vertical = 2.dp), color = Gb.gray, size = 11)
+        }
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FuelQuad(act, Modifier.weight(1f))
+            DriveQuad(act, Modifier.weight(1f))
+        }
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            MusicQuad(Modifier.weight(1f), onMusic)
+            ProgressQuad(now, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun FuelQuad(act: Activity, modifier: Modifier) {
+    val r = Out.fuel
+    val info = r?.getOrNull()
+    val best = info?.servos?.firstOrNull { it.best }
+    Quad("fuel · u91", modifier, onClick = best?.let { b -> { navigate(act, b.lat, b.lng) } }) {
+        when {
+            r == null -> T("…", color = Gb.gray)
+            info == null -> T(r.exceptionOrNull()?.message ?: "fuel unavailable", color = Gb.red, size = 11, maxLines = 3)
+            info.servos.isEmpty() -> T("no u91 prices nearby", color = Gb.gray, size = 11)
+            else -> info.servos.forEach { s ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { navigate(act, s.lat, s.lng) }.padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    T(if (s.best) "★ " else "  ", color = Gb.green, size = 12)
+                    T(f1(s.price), color = if (s.best) Gb.green else Gb.fg, size = 12)
+                    if (s.cheapest && !s.best) T(" $", color = Gb.gray, size = 12)
+                    Spacer(Modifier.weight(1f))
+                    T(f1(s.km) + "km", color = Gb.gray, size = 11)
+                }
+            }
+        }
+        info?.trend?.let { tr ->
+            Spacer(Modifier.weight(1f))
+            Row {
+                T("cycle ", color = Gb.gray, size = 11)
+                when (tr) {
+                    "rising" -> T("rising ↑", color = Gb.orange, size = 11)
+                    "falling" -> T("falling ↓", color = Gb.green, size = 11)
+                    "steady" -> T("steady", color = Gb.fg, size = 11)
+                    else -> T("learning…", color = Gb.gray, size = 11)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DriveQuad(act: Activity, modifier: Modifier) {
+    val r = Out.drive
+    val d = r?.getOrNull()
+    Quad("drive · work", modifier, onClick = d?.let { x -> { navigate(act, x.lat, x.lng) } }) {
+        when {
+            r == null -> T("…", color = Gb.gray)
+            d == null -> T(r.exceptionOrNull()?.message ?: "drive unavailable", color = Gb.red, size = 11, maxLines = 3)
+            else -> {
+                val delta = d.minutes - d.usual
+                Row(verticalAlignment = Alignment.Bottom) {
+                    T("${d.minutes}", color = Gb.yellow, size = 20)
+                    T(" min", color = Gb.fg, size = 12)
+                    if (delta >= 1) T(" +$delta", color = if (delta >= 5) Gb.red else Gb.orange, size = 12)
+                }
+                T("usual ${d.usual}", color = Gb.gray, size = 11)
+                if (d.crashes.isEmpty()) {
+                    T("no crashes on route", color = Gb.gray, size = 11)
+                } else {
+                    d.crashes.take(2).forEach { T("▲ $it", color = Gb.red, size = 11, maxLines = 2) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MusicQuad(modifier: Modifier, onMusic: () -> Unit) {
+    val m = Out.music
+    Quad("music ↗", modifier, onClick = onMusic) {
+        if (m == null) {
+            T(if (Out.musicBusy) "fetching…" else "…", color = Gb.gray, size = 11)
+            return@Quad
+        }
+        val g = m.gigs.firstOrNull()
+        if (g != null) {
+            T("♪ gig · " + g.date.format(DAY).lowercase(), color = Gb.purple, size = 11, maxLines = 1)
+            T(g.artist.lowercase(), color = Gb.fg, size = 12, maxLines = 1)
+            T(g.venue.lowercase(), color = Gb.gray, size = 11, maxLines = 1)
+        } else {
+            T("no gigs listed", color = Gb.gray, size = 11)
+        }
+        Spacer(Modifier.height(4.dp))
+        val rel = m.releases.firstOrNull()
+        if (rel != null) {
+            T("◉ new · " + ago(rel.date), color = Gb.aqua, size = 11, maxLines = 1)
+            T("${rel.artist} — ${rel.title}".lowercase(), color = Gb.fg, size = 12, maxLines = 2)
+        } else {
+            T("nothing new this month", color = Gb.gray, size = 11)
+        }
+        if (m.error != null && m.gigs.isEmpty() && m.releases.isEmpty()) {
+            T(m.error, color = Gb.red, size = 11, maxLines = 2)
+        }
+    }
+}
+
+@Composable
+private fun ProgressQuad(now: LocalDateTime, modifier: Modifier) {
+    Quad("progress", modifier) {
+        progress(now).forEach { b ->
+            val k = (b.fraction * 8).roundToInt().coerceIn(0, 8)
+            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                T(b.label.padEnd(6), color = Gb.gray, size = 11)
+                T("█".repeat(k), color = b.color, size = 11)
+                T("░".repeat(8 - k), color = Gb.bg2, size = 11)
+                Spacer(Modifier.weight(1f))
+                T("${(b.fraction * 100).toInt()}%", color = Gb.fg, size = 11)
+            }
+        }
+    }
+}
+
+// ---------- music, full page ----------
+
+@Composable
+fun MusicScreen(act: MainActivity, prefs: Prefs, onBack: () -> Unit) {
+    val m = Out.music
+    LaunchedEffect(Unit) {
+        if (Out.music == null) Out.music = withContext(Dispatchers.IO) { MusicFeed.cached(prefs) }
+    }
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            T("❯ music", color = Gb.purple)
+            Spacer(Modifier.weight(1f))
+            if (Out.musicBusy) {
+                T("fetching…", Modifier.padding(6.dp), color = Gb.gray, size = 12)
+            } else {
+                T("refresh", Modifier.clickable { refreshMusic(act, prefs) }.padding(6.dp), color = Gb.aqua, size = 12)
+            }
+            T("esc", Modifier.clickable(onClick = onBack).padding(6.dp), color = Gb.gray, size = 12)
+        }
+        LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            item { T("gigs · qld", color = Gb.gray, size = 11) }
+            if (m == null || m.gigs.isEmpty()) {
+                item { T("none listed on ticketmaster", color = Gb.gray, size = 12) }
+            } else {
+                items(m.gigs) { g ->
+                    Column(Modifier.fillMaxWidth().clickable { openUrl(act, g.url) }.padding(vertical = 3.dp)) {
+                        Row {
+                            T(g.date.format(DAY).lowercase().padEnd(11), color = Gb.yellow, size = 12)
+                            T(g.artist.lowercase(), color = Gb.fg, size = 12, maxLines = 1)
+                        }
+                        T(g.venue.lowercase() + "  tickets ↗", color = Gb.gray, size = 11, maxLines = 1)
+                    }
+                }
+            }
+            item {
+                Column {
+                    Spacer(Modifier.height(8.dp))
+                    T("new · last 30 days", color = Gb.gray, size = 11)
+                }
+            }
+            if (m == null || m.releases.isEmpty()) {
+                item { T("nothing new from artists you follow", color = Gb.gray, size = 12) }
+            } else {
+                items(m.releases) { r ->
+                    Row(Modifier.fillMaxWidth().clickable { play(act, r.uri) }.padding(vertical = 3.dp)) {
+                        T(agoShort(r.date).padEnd(5), color = Gb.aqua, size = 12)
+                        Column(Modifier.weight(1f)) {
+                            T(r.title.lowercase(), color = Gb.fg, size = 12, maxLines = 1)
+                            T(r.artist.lowercase() + if (r.single) " · single" else "", color = Gb.gray, size = 11, maxLines = 1)
+                        }
+                        T("▶", color = Gb.green, size = 12)
+                    }
+                }
+            }
+            item {
+                Column {
+                    Spacer(Modifier.height(8.dp))
+                    m?.error?.let { T(it, color = Gb.red, size = 11) }
+                    val at = m?.at?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDateTime().format(HM) }
+                    T("gigs: ticketmaster listings only" + (at?.let { " · updated $it" } ?: ""), color = Gb.gray, size = 11)
+                }
+            }
+        }
+    }
+}
+
+// ---------- setup, shown inside cfg ----------
+
+@Composable
+private fun KeyRow(prefs: Prefs, key: String, label: String, placeholder: String, secret: Boolean = true, onSaved: () -> Unit = {}) {
+    var saved by remember { mutableStateOf(prefs.get(key)) }
+    var v by remember { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        T(label.padEnd(11), size = 12)
+        when {
+            saved == null -> T("not set", color = Tn.dim, size = 12)
+            secret -> T("saved", color = Tn.green, size = 12)
+            else -> T(saved!!, color = Tn.green, size = 12, maxLines = 1)
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Field(v, { v = it }, placeholder, Modifier.weight(1f), secret = secret)
+        Btn("save", Tn.blue) {
+            if (v.isNotBlank()) {
+                prefs.put(key to v.trim())
+                saved = v.trim()
+                v = ""
+                onSaved()
+            }
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+}
+
+@Composable
+fun OutTile(prefs: Prefs, tick: Int) {
+    val ctx = LocalContext.current
+    // Re-checked on resume, so it flips to connected when Spotify sends you back.
+    var connected by remember(tick) { mutableStateOf(Spotify.connected(prefs)) }
+    var status by remember { mutableStateOf<String?>(null) }
+    Tile(label = "page 5 · out there") {
+        T("each service gives a free key; see the readme for where.", color = Tn.dim, size = 11)
+        Spacer(Modifier.height(4.dp))
+        KeyRow(prefs, Prefs.FUEL_TOKEN, "fuel", "subscriber token") { Out.fuelAt = 0L }
+        KeyRow(prefs, Prefs.TOMTOM_KEY, "tomtom", "api key") { Out.driveAt = 0L }
+        KeyRow(prefs, Prefs.WORK_ADDR, "work", "street, suburb", secret = false) { Out.driveAt = 0L }
+        KeyRow(prefs, Prefs.QLDT_KEY, "qldtraffic", "optional, own key") { Out.driveAt = 0L }
+        KeyRow(prefs, Prefs.TM_KEY, "ticketmstr", "consumer key")
+        KeyRow(prefs, Prefs.SP_CLIENT, "spotify id", "client id", secret = false)
+        T("spotify redirect uri: ${Spotify.REDIRECT}", color = Tn.dim, size = 11)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (connected) {
+                T("spotify connected", color = Tn.green, size = 12)
+                Btn("disconnect", Tn.red) {
+                    Spotify.disconnect(prefs)
+                    connected = false
+                }
+            } else {
+                Btn("connect spotify", Tn.green) {
+                    status = runCatching {
+                        ctx.startActivity(Intent(Intent.ACTION_VIEW, Spotify.authUrl(prefs)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        null
+                    }.getOrElse { it.message }
+                }
+            }
+        }
+        status?.let { T(it, color = Tn.red, size = 11) }
+    }
+}
