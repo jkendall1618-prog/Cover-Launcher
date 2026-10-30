@@ -74,6 +74,7 @@ class Prefs(context: Context) {
         const val SP_REFRESH = "sp_refresh"
         const val SP_EXPIRES = "sp_expires"
         const val SP_ARTISTS = "sp_artists"
+        const val SP_SCOPE = "sp_scope"
         const val MUSIC_JSON = "music_json"
     }
 }

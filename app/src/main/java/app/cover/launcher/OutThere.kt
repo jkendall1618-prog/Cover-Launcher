@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -303,9 +304,14 @@ data class Music(val releases: List<Release>, val gigs: List<Gig>, val error: St
 /** Spotify sign-in (PKCE, no secret on the phone) for followed artists and their new releases. */
 object Spotify {
     const val REDIRECT = "coverlauncher://spotify/callback"
-    private const val SCOPE = "user-follow-read"
+    /** Follows, top artists, and following everyone in a playlist. Changing this needs a reconnect. */
+    private const val SCOPE = "user-follow-read user-follow-modify user-library-modify user-top-read " +
+        "playlist-read-private playlist-read-collaborative"
 
     fun connected(prefs: Prefs) = prefs.get(Prefs.SP_REFRESH) != null
+
+    /** False for connections made before the playlist-follow update: they need one more approval. */
+    fun hasScopes(prefs: Prefs) = prefs.get(Prefs.SP_SCOPE)?.let { "playlist-read-private" in it && "user-follow-modify" in it } == true
 
     fun authUrl(prefs: Prefs): Uri {
         val client = prefs.get(Prefs.SP_CLIENT) ?: throw IllegalStateException("add your spotify client id first")
@@ -344,7 +350,7 @@ object Spotify {
     }
 
     fun disconnect(prefs: Prefs) =
-        prefs.put(Prefs.SP_ACCESS to null, Prefs.SP_REFRESH to null, Prefs.SP_EXPIRES to null, Prefs.SP_ARTISTS to null)
+        prefs.put(Prefs.SP_ACCESS to null, Prefs.SP_REFRESH to null, Prefs.SP_EXPIRES to null, Prefs.SP_ARTISTS to null, Prefs.SP_SCOPE to null)
 
     private fun post(form: FormBody): JSONObject {
         val req = Request.Builder().url("https://accounts.spotify.com/api/token").post(form).build()
@@ -361,6 +367,7 @@ object Spotify {
             Prefs.SP_EXPIRES to System.currentTimeMillis() + j.optLong("expires_in", 3600) * 1000 - 60_000,
         )
         j.optString("refresh_token").takeIf { it.isNotBlank() }?.let { prefs.put(Prefs.SP_REFRESH to it) }
+        j.optString("scope").takeIf { it.isNotBlank() }?.let { prefs.put(Prefs.SP_SCOPE to it) }
     }
 
     private fun token(prefs: Prefs): String {
@@ -392,8 +399,36 @@ object Spotify {
         throw IllegalStateException("spotify is rate limiting, try later")
     }
 
-    /** Followed artists as (id, name). Capped at 300 to keep the release scan quick. */
+    /** A PUT with no body, retrying politely when Spotify rate-limits. */
+    private fun put(prefs: Prefs, url: String) {
+        repeat(3) {
+            val req = Request.Builder().url(url)
+                .header("Authorization", "Bearer ${token(prefs)}")
+                .put(ByteArray(0).toRequestBody(null))
+                .build()
+            http.newCall(req).execute().use { r ->
+                if (r.isSuccessful) return
+                if (r.code != 429) throw HttpError(r.code)
+                Thread.sleep(((r.header("Retry-After")?.toLongOrNull() ?: 2) * 1000).coerceAtMost(8000))
+            }
+        }
+        throw IllegalStateException("spotify is rate limiting, try later")
+    }
+
+    /** Followed artists plus your most-played artists of the last six months or so, as (id, name). */
     fun artists(prefs: Prefs): List<Pair<String, String>> {
+        val top = runCatching {
+            val items = api(prefs, "https://api.spotify.com/v1/me/top/artists?time_range=medium_term&limit=50")
+                .optJSONArray("items") ?: JSONArray()
+            (0 until items.length()).map { items.getJSONObject(it) }.map { it.getString("id") to it.getString("name") }
+        }.getOrDefault(emptyList()) // older connections can't read top artists until reconnected
+        val all = (followed(prefs) + top).distinctBy { it.first }
+        prefs.put(Prefs.SP_ARTISTS to JSONArray(all.map { it.second }).toString())
+        return all
+    }
+
+    /** Followed artists as (id, name). Capped at 300 to keep the release scan quick. */
+    fun followed(prefs: Prefs): List<Pair<String, String>> {
         val out = ArrayList<Pair<String, String>>()
         var url: String? = "https://api.spotify.com/v1/me/following?type=artist&limit=50"
         while (url != null && out.size < 300) {
@@ -402,8 +437,61 @@ object Spotify {
             for (i in 0 until items.length()) items.getJSONObject(i).let { out += it.getString("id") to it.getString("name") }
             url = a.optString("next").takeIf { it.isNotBlank() && it != "null" }
         }
-        prefs.put(Prefs.SP_ARTISTS to JSONArray(out.map { it.second }).toString())
         return out
+    }
+
+    /** Everything needed to show "follow N artists?" before doing it. */
+    data class FollowPlan(val all: List<Pair<String, String>>, val fresh: List<Pair<String, String>>)
+
+    fun playlistId(input: String): String? =
+        Regex("playlist[/:]([A-Za-z0-9]{10,})").find(input)?.groupValues?.get(1)
+            ?: input.trim().takeIf { Regex("[A-Za-z0-9]{22}").matches(it) }
+
+    /** Each track's main artist (not guest features), minus anyone already followed. */
+    fun planFollow(prefs: Prefs, playlist: String): FollowPlan {
+        val id = playlistId(playlist) ?: throw IllegalStateException("that doesn't look like a playlist link")
+        val seen = LinkedHashMap<String, String>()
+        var url: String? = "https://api.spotify.com/v1/playlists/$id/items?limit=50"
+        while (url != null) {
+            val j = try {
+                api(prefs, url)
+            } catch (e: HttpError) {
+                if (e.code == 403 || e.code == 404) throw IllegalStateException("spotify only shares playlists you own or collaborate on")
+                throw e
+            }
+            val items = j.optJSONArray("items") ?: JSONArray()
+            for (i in 0 until items.length()) {
+                val entry = items.getJSONObject(i)
+                val t = entry.optJSONObject("item") ?: entry.optJSONObject("track") ?: continue
+                val a = t.optJSONArray("artists")?.optJSONObject(0) ?: continue
+                val aid = a.optString("id")
+                if (aid.isNotBlank()) seen.putIfAbsent(aid, a.optString("name"))
+            }
+            url = j.optString("next").takeIf { it.isNotBlank() && it != "null" }
+        }
+        if (seen.isEmpty()) throw IllegalStateException("no artists found; spotify only shares playlists you own or collaborate on")
+        val already = followed(prefs).map { it.first }.toSet()
+        val all = seen.map { it.key to it.value }
+        return FollowPlan(all, all.filter { it.first !in already })
+    }
+
+    /** Follows the given artists, 40 at a time. Returns how many. */
+    fun follow(prefs: Prefs, ids: List<String>): Int {
+        var done = 0
+        for (chunk in ids.chunked(40)) {
+            val uris = chunk.joinToString(",") { "spotify:artist:$it" }
+            try {
+                put(prefs, "https://api.spotify.com/v1/me/library?uris=$uris")
+            } catch (e: HttpError) {
+                if (e.code == 401) throw IllegalStateException("reconnect spotify in cfg")
+                // Spotify's new library endpoint; if it won't take artists for this app, try the older follow call.
+                runCatching { put(prefs, "https://api.spotify.com/v1/me/following?type=artist&ids=" + chunk.joinToString(",")) }
+                    .onFailure { throw IllegalStateException("spotify refused the follow (${e.code}); followed $done so far") }
+            }
+            done += chunk.size
+            Thread.sleep(200)
+        }
+        return done
     }
 
     /** Albums and singles from followed artists released in the last [days] days, newest first. */

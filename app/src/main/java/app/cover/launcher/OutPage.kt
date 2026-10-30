@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -406,6 +407,12 @@ fun OutTile(prefs: Prefs, tick: Int) {
         KeyRow(prefs, Prefs.SP_CLIENT, "spotify id", "client id", secret = false)
         T("spotify redirect uri: ${Spotify.REDIRECT}", color = Tn.dim, size = 11)
         Spacer(Modifier.height(4.dp))
+        val signIn = {
+            status = runCatching {
+                ctx.startActivity(Intent(Intent.ACTION_VIEW, Spotify.authUrl(prefs)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                null
+            }.getOrElse { it.message }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (connected) {
                 T("spotify connected", color = Tn.green, size = 12)
@@ -414,14 +421,80 @@ fun OutTile(prefs: Prefs, tick: Int) {
                     connected = false
                 }
             } else {
-                Btn("connect spotify", Tn.green) {
-                    status = runCatching {
-                        ctx.startActivity(Intent(Intent.ACTION_VIEW, Spotify.authUrl(prefs)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                        null
-                    }.getOrElse { it.message }
-                }
+                Btn("connect spotify", Tn.green, signIn)
             }
         }
         status?.let { T(it, color = Tn.red, size = 11) }
+        if (connected) {
+            if (Spotify.hasScopes(prefs)) {
+                FollowTool(prefs)
+            } else {
+                Spacer(Modifier.height(4.dp))
+                T("reconnect once to allow top artists and following a playlist's artists.", color = Tn.yellow, size = 11)
+                Spacer(Modifier.height(4.dp))
+                Btn("reconnect spotify", Tn.yellow, signIn)
+            }
+        }
+    }
+}
+
+/** Follow every main artist in a playlist: scan, show the count, follow on a second tap. */
+@Composable
+private fun FollowTool(prefs: Prefs) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var link by remember { mutableStateOf(Actions.PLAYLIST) }
+    var busy by remember { mutableStateOf(false) }
+    var plan by remember { mutableStateOf<Spotify.FollowPlan?>(null) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var bad by remember { mutableStateOf(false) }
+
+    Spacer(Modifier.height(6.dp))
+    T("follow every artist in a playlist (yours or collaborative)", color = Tn.dim, size = 11)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Field(link, { link = it; plan = null }, "playlist link", Modifier.weight(1f))
+        Btn(if (busy) "…" else "scan", Tn.blue) {
+            if (busy) return@Btn
+            busy = true
+            plan = null
+            bad = false
+            msg = "reading playlist…"
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { runCatching { Spotify.planFollow(prefs, link) } }
+                busy = false
+                r.onSuccess {
+                    plan = it
+                    msg = "${it.all.size} artists · ${it.fresh.size} not followed yet"
+                }.onFailure {
+                    bad = true
+                    msg = it.message ?: "couldn't read that playlist"
+                }
+            }
+        }
+    }
+    msg?.let { T(it, color = if (bad) Tn.red else Tn.fg, size = 11) }
+    plan?.takeIf { it.fresh.isNotEmpty() }?.let { p ->
+        T(
+            p.fresh.take(6).joinToString(", ") { it.second.lowercase() } + if (p.fresh.size > 6) ", …" else "",
+            color = Tn.dim, size = 11, maxLines = 2,
+        )
+        Spacer(Modifier.height(4.dp))
+        Btn(if (busy) "following…" else "follow ${p.fresh.size}", Tn.green) {
+            if (busy) return@Btn
+            busy = true
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { runCatching { Spotify.follow(prefs, p.fresh.map { it.first }) } }
+                busy = false
+                r.onSuccess { n ->
+                    plan = null
+                    bad = false
+                    msg = "followed $n · music page is refreshing"
+                    (ctx as? MainActivity)?.let { refreshMusic(it, prefs) }
+                }.onFailure {
+                    bad = true
+                    msg = it.message ?: "spotify refused the follow"
+                }
+            }
+        }
     }
 }
