@@ -77,6 +77,11 @@ class Homebase(private val prefs: Prefs) {
         }
     }
 
+    /** Adds to the shared list. Homebase fills in the household; the aisle starts as "Other". */
+    fun addGrocery(name: String) {
+        send("POST", "/rest/v1/grocery_items", JSONObject().put("name", name.trim()).toString())
+    }
+
     fun tick(g: Grocery) {
         val patch = JSONObject().put("done", true).put("done_at", Instant.now().toString())
         send("PATCH", "/rest/v1/grocery_items?id=eq.${g.id}", patch.toString())

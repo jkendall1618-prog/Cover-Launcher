@@ -314,7 +314,8 @@ fun CoverApp(act: MainActivity, tick: Int) {
             ) { page ->
             if (page == 1) {
                 DoPage(
-                    act, prefs, wx, shopCount,
+                    act, prefs, hb, wx, shopCount,
+                    onShopAdded = { shopCount = (shopCount ?: 0) + 1 },
                     onHome = { scope.launch { pager.animateScrollToPage(0) } },
                     onPeople = { screen = Screen.PEOPLE },
                     onShop = { screen = Screen.SHOP },

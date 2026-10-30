@@ -9,11 +9,13 @@ import android.content.pm.PackageManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.net.Uri
+import android.os.Bundle
 import android.provider.AlarmClock
 import android.provider.ContactsContract
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings
+import android.telecom.TelecomManager
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -58,6 +60,8 @@ object Actions {
 
     fun bluetooth(act: Activity): Boolean = startHere(act, Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
 
+    fun usageSettings(act: Activity): Boolean = startHere(act, Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+
     fun wifi(act: Activity): Boolean = startHere(act, Intent(Settings.Panel.ACTION_WIFI))
 
     // ---------- torch ----------
@@ -83,10 +87,7 @@ object Actions {
     fun canCall(ctx: Context) =
         ctx.checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
 
-    /**
-     * Looks the number up from your contacts at the moment you tap, so cover never keeps a copy.
-     * Calls straight away when allowed, otherwise opens the dialer with the number ready.
-     */
+    /** Looks the number up from your contacts at the moment you tap, so cover never keeps a copy. */
     fun call(act: Activity, contactUri: String): String? {
         val found: String? = try {
             act.contentResolver.query(
@@ -98,8 +99,16 @@ object Actions {
             return "allow contacts in cfg"
         }
         val number = found ?: return "contact gone, pick again in cfg"
-        val action = if (canCall(act)) Intent.ACTION_CALL else Intent.ACTION_DIAL
-        return if (startHere(act, Intent(action, Uri.fromParts("tel", number, null)))) null else "couldn't start the call"
+        if (!canCall(act)) return "allow calls in cfg"
+        // Hands the call straight to Android's phone service rather than opening a dialer screen,
+        // so Samsung's own call screen takes over on the cover and the phone can stay shut.
+        val tm = act.getSystemService(TelecomManager::class.java) ?: return "no phone service"
+        return try {
+            tm.placeCall(Uri.fromParts("tel", number, null), Bundle())
+            null
+        } catch (e: SecurityException) {
+            "allow calls in cfg"
+        }
     }
 
     // ---------- capture ----------

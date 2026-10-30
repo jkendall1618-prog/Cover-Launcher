@@ -23,6 +23,16 @@ class Prefs(context: Context) {
     fun get(key: String): String? = sp.getString(key, null)?.takeIf { it.isNotBlank() }
     fun getLong(key: String): Long = sp.getLong(key, 0L)
 
+    /** A speed-dial label as shown on page 2 ("Mom" from build 4 reads as Mum). */
+    fun dialName(i: Int): String {
+        val saved = get(dialLabel(i))?.trim().orEmpty()
+        return when {
+            saved.isEmpty() -> DIAL_DEFAULTS[i]
+            saved.equals("mom", ignoreCase = true) -> "Mum"
+            else -> saved
+        }
+    }
+
     fun put(vararg pairs: Pair<String, Any?>) {
         val e = sp.edit()
         for ((k, v) in pairs) when (v) {
@@ -45,6 +55,6 @@ class Prefs(context: Context) {
         const val CAPTURE_DIR = "capture_dir"
         fun dialLabel(i: Int) = "dial_label_$i"
         fun dialUri(i: Int) = "dial_uri_$i"
-        val DIAL_DEFAULTS = listOf("Jac", "Mom", "Dad")
+        val DIAL_DEFAULTS = listOf("Jac", "Mum", "Dad")
     }
 }

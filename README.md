@@ -22,14 +22,15 @@ Kanagawa Dragon colours, so you can tell which page you're on at a glance. The b
 | Row | What it does |
 | --- | --- |
 | status | page dots (tap to go back) · weather for Spring Mountain from Open-Meteo, e.g. `24° rain from 3pm` |
-| capture | type or tap `mic`; each entry becomes its own dated `.md` note in the inbox folder picked in cfg |
+| today | how many times you've unlocked the phone today, and total screen-on time |
+| capture | type or tap `mic`; each entry becomes its own dated `.md` note in the inbox folder picked in cfg · start with `+` (e.g. `+milk`) to add to the shopping list instead |
 | people | message notifications from people · tap for the list, reply in place or open the conversation |
 | doom and friends · pay | plays the playlist (through Spotify's session if it allows, otherwise opens it) · opens Google Wallet |
-| speed dial | three contacts picked in cfg; the number is looked up when you tap, never stored |
-| min 5 10 25 · shop | one-tap timers · unticked Homebase grocery items, tap to see and tick them off |
+| speed dial | three contacts picked in cfg; calls start straight away with the phone closed · the number is looked up when you tap, never stored |
+| min 5 10 25 · shop | one-tap timers · Homebase grocery list: tap to see, tick off, or add items (typed, or by voice: "milk and eggs" adds two) |
 | torch cam bt↗ wifi↗ · brief me | torch toggle · camera · Bluetooth and Wi-Fi settings (Android won't let apps flip those directly) · a three-line rundown of your day from Claude |
 
-Set up once in `● cfg` → **page 2**: grant contacts and calls, pick the inbox folder, label and pick the three speed-dial contacts. People uses the media access you've already granted.
+Set up once in `● cfg` → **page 2**: grant contacts and calls, turn on usage access for cover, pick the inbox folder, label and pick the three speed-dial contacts. People uses the media access you've already granted.
 
 Privacy: message notifications stay in memory while cover runs and are never saved or sent. "brief me" sends your upcoming calendar titles, open todo titles, the weather line and the grocery count to Claude, nothing else.
 

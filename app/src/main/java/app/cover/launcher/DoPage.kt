@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.ContactsContract
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -59,7 +60,6 @@ import kotlinx.coroutines.withContext
 
 // Page 2 ("do"): Kanagawa Dragon, swiped to from page 1. Page 1 lives in MainActivity, unchanged.
 
-private val ROW = 42.dp
 private val SQUARE = 44.dp
 
 private data class Dial(val label: String, val uri: String?)
@@ -77,7 +77,7 @@ private fun Cell(
     content: @Composable RowScope.() -> Unit,
 ) {
     val shape = RoundedCornerShape(4.dp)
-    var m = modifier.height(ROW).clip(shape).background(fill).border(stroke, border, shape)
+    var m = modifier.fillMaxHeight().clip(shape).background(fill).border(stroke, border, shape)
     if (onClick != null) m = m.clickable(onClick = onClick)
     Row(
         m.padding(horizontal = pad),
@@ -91,8 +91,10 @@ private fun Cell(
 fun DoPage(
     act: MainActivity,
     prefs: Prefs,
+    hb: Homebase,
     wx: Wx?,
     shop: Int?,
+    onShopAdded: () -> Unit,
     onHome: () -> Unit,
     onPeople: () -> Unit,
     onShop: () -> Unit,
@@ -119,6 +121,20 @@ fun DoPage(
     var draft by remember { mutableStateOf("") }
     fun save(text: String) {
         if (text.isBlank()) return
+        val t = text.trim()
+        if (t.startsWith("+")) {
+            val item = t.drop(1).trim()
+            if (item.isEmpty()) return
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { runCatching { hb.addGrocery(item) } }
+                r.onSuccess {
+                    draft = ""
+                    say("+ ${item.lowercase()} → shop ✓")
+                    onShopAdded()
+                }.onFailure { say(it.message ?: "couldn't add", bad = true) }
+            }
+            return
+        }
         scope.launch {
             val r = withContext(Dispatchers.IO) { runCatching { Actions.capture(ctx, prefs, text) } }
             r.onSuccess {
@@ -159,166 +175,201 @@ fun DoPage(
     // ---- speed dial (set in cfg) ----
     val dials = remember {
         (0..2).map { i ->
-            Dial(prefs.get(Prefs.dialLabel(i)) ?: Prefs.DIAL_DEFAULTS[i], prefs.get(Prefs.dialUri(i)))
+            Dial(prefs.dialName(i), prefs.get(Prefs.dialUri(i)))
         }
     }
 
     val peopleCount = People.msgs.size
     val notifOk = remember { Media.hasAccess(ctx) }
 
-    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceBetween) {
+    // ---- today: unlocks and screen time, refreshed each minute while page 2 is showing ----
+    val usageOk = remember { Usage.hasAccess(ctx) }
+    var today by remember { mutableStateOf<Today?>(null) }
+    LaunchedEffect(usageOk) {
+        while (usageOk) {
+            today = withContext(Dispatchers.IO) { runCatching { Usage.today(ctx) }.getOrNull() }
+            delay(60_000)
+        }
+    }
+    val openUsage: () -> Unit = { Actions.usageSettings(act) }
 
-        // ===== top: status line + capture =====
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth().height(22.dp), verticalAlignment = Alignment.CenterVertically) {
-                Row(
-                    Modifier.clickable(onClick = onHome).padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(Modifier.size(6.dp).border(1.dp, Kd.dim, CircleShape))
-                    Box(Modifier.size(width = 14.dp, height = 6.dp).clip(RoundedCornerShape(3.dp)).background(Kd.amber))
+    // Every row below the status line shares the height equally, with the same gap between all of them.
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+
+        // ---- status line ----
+        Row(Modifier.fillMaxWidth().height(22.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.clickable(onClick = onHome).padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(6.dp).border(1.dp, Kd.dim, CircleShape))
+                Box(Modifier.size(width = 14.dp, height = 6.dp).clip(RoundedCornerShape(3.dp)).background(Kd.amber))
+            }
+            Spacer(Modifier.width(8.dp))
+            T("do", color = Kd.amber)
+            Spacer(Modifier.weight(1f))
+            val n = note
+            when {
+                n != null -> T(n, color = if (noteBad) Kd.red else Kd.sage, size = 12, maxLines = 1)
+                wx != null -> Row {
+                    T("${wx.temp}° ", color = Kd.fg, size = 12)
+                    T(wx.note, color = Kd.dim, size = 12, maxLines = 1)
                 }
+                else -> T("weather…", color = Kd.faint, size = 12)
+            }
+        }
+
+        // ---- today ----
+        Cell(
+            Modifier.fillMaxWidth().weight(1f), pad = 10.dp, arrangement = Arrangement.Start,
+            onClick = if (usageOk) null else openUsage,
+        ) {
+            val t = today
+            when {
+                !usageOk -> T("today · tap to allow usage access", color = Kd.dim, size = 12, maxLines = 1)
+                t == null -> T("today…", color = Kd.faint, size = 12)
+                else -> {
+                    T("today", color = Kd.faint, size = 12)
+                    Spacer(Modifier.width(10.dp))
+                    T("unlocked ", color = Kd.dim, size = 12)
+                    T("${t.unlocks}×", color = Kd.amber)
+                    Spacer(Modifier.weight(1f))
+                    T(t.screenLabel, color = Kd.fg, size = 12)
+                    T(" on screen", color = Kd.dim, size = 12, maxLines = 1)
+                }
+            }
+        }
+
+        // ---- capture ----
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val shape = RoundedCornerShape(4.dp)
+            Row(
+                Modifier.weight(1f).fillMaxHeight().clip(shape).background(Kd.bgDark)
+                    .border(2.dp, Kd.amber, shape).padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                T("› ", color = Kd.amber)
+                BasicTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    modifier = Modifier.weight(1f),
+                    textStyle = Body.copy(color = Kd.fg),
+                    cursorBrush = SolidColor(Kd.amber),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { save(draft) }),
+                    decorationBox = { inner ->
+                        Box {
+                            if (draft.isEmpty()) T("note, or +milk for shop", color = Kd.faint, maxLines = 1)
+                            inner()
+                        }
+                    },
+                )
+            }
+            Cell(Modifier.width(SQUARE), border = Kd.amber, fill = Kd.amber, onClick = { listen() }) {
+                T("mic", color = Kd.bg, size = 12)
+            }
+        }
+
+        // ---- people ----
+        Cell(Modifier.fillMaxWidth().weight(1f), pad = 10.dp, arrangement = Arrangement.Start, onClick = onPeople) {
+            if (!notifOk) {
+                T("people · allow notifications in cfg", color = Kd.dim, size = 12, maxLines = 1)
+            } else {
+                Box(
+                    Modifier.size(22.dp).clip(CircleShape).background(if (peopleCount > 0) Kd.sage else Kd.border),
+                    contentAlignment = Alignment.Center,
+                ) { T("$peopleCount", color = if (peopleCount > 0) Kd.bg else Kd.dim, size = 12) }
                 Spacer(Modifier.width(8.dp))
-                T("do", color = Kd.amber)
-                Spacer(Modifier.weight(1f))
-                val n = note
-                when {
-                    n != null -> T(n, color = if (noteBad) Kd.red else Kd.sage, size = 12, maxLines = 1)
-                    wx != null -> Row {
-                        T("${wx.temp}° ", color = Kd.fg, size = 12)
-                        T(wx.note, color = Kd.dim, size = 12, maxLines = 1)
-                    }
-                    else -> T("weather…", color = Kd.faint, size = 12)
-                }
+                T("people")
+                T(
+                    if (peopleCount > 0) "  · reply from here" else "  · all quiet",
+                    Modifier.weight(1f), color = Kd.dim, size = 12, maxLines = 1,
+                )
+                T("›", color = Kd.dim)
             }
+        }
 
-            Row(Modifier.fillMaxWidth().height(ROW), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                val shape = RoundedCornerShape(4.dp)
-                Row(
-                    Modifier.weight(1f).fillMaxHeight().clip(shape).background(Kd.bgDark)
-                        .border(2.dp, Kd.amber, shape).padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+        // ---- music + pay ----
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Cell(
+                Modifier.weight(1f), border = Kd.sage, fill = Kd.bgDark, pad = 10.dp,
+                arrangement = Arrangement.Start,
+                onClick = { if (Actions.playlist(act)) say("▶ doom and friends") else say("spotify not found", bad = true) },
+            ) {
+                T("♪ ", color = Kd.dim, size = 12)
+                T("doom and friends", Modifier.weight(1f), maxLines = 1)
+                Box(
+                    Modifier.size(30.dp).clip(RoundedCornerShape(4.dp)).background(Kd.sage),
+                    contentAlignment = Alignment.Center,
+                ) { T("▶", color = Kd.bg, size = 12) }
+            }
+            Cell(
+                Modifier.width(88.dp), border = Kd.amber,
+                onClick = { if (!Actions.wallet(act)) say("wallet not found", bad = true) },
+            ) { T("pay", color = Kd.amber) }
+        }
+
+        // ---- speed dial ----
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            dials.forEach { d ->
+                Cell(
+                    Modifier.weight(1f), pad = 8.dp, arrangement = Arrangement.Start,
+                    onClick = {
+                        val uri = d.uri
+                        if (uri == null) {
+                            say("pick ${d.label} in cfg", bad = true)
+                        } else {
+                            val err = Actions.call(act, uri)
+                            if (err != null) say(err, bad = true) else say("calling ${d.label.lowercase()}")
+                        }
+                    },
                 ) {
-                    T("› ", color = Kd.amber)
-                    BasicTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        modifier = Modifier.weight(1f),
-                        textStyle = Body.copy(color = Kd.fg),
-                        cursorBrush = SolidColor(Kd.amber),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { save(draft) }),
-                        decorationBox = { inner ->
-                            Box {
-                                if (draft.isEmpty()) T("capture → inbox", color = Kd.faint, maxLines = 1)
-                                inner()
-                            }
-                        },
-                    )
-                }
-                Cell(Modifier.width(SQUARE), border = Kd.amber, fill = Kd.amber, onClick = { listen() }) {
-                    T("mic", color = Kd.bg, size = 12)
+                    Box(
+                        Modifier.size(26.dp).clip(CircleShape).border(1.dp, Kd.amber, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) { T(d.label.take(1).uppercase(), color = Kd.amber, size = 12) }
+                    Spacer(Modifier.width(6.dp))
+                    T(d.label, color = if (d.uri != null) Kd.fg else Kd.dim, maxLines = 1)
                 }
             }
         }
 
-        // ===== middle: people, music + pay, speed dial =====
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Cell(Modifier.fillMaxWidth(), pad = 10.dp, arrangement = Arrangement.Start, onClick = onPeople) {
-                if (!notifOk) {
-                    T("people · allow notifications in cfg", color = Kd.dim, size = 12, maxLines = 1)
-                } else {
-                    Box(
-                        Modifier.size(22.dp).clip(CircleShape).background(if (peopleCount > 0) Kd.sage else Kd.border),
-                        contentAlignment = Alignment.Center,
-                    ) { T("$peopleCount", color = if (peopleCount > 0) Kd.bg else Kd.dim, size = 12) }
-                    Spacer(Modifier.width(8.dp))
-                    T("people")
-                    T(
-                        if (peopleCount > 0) "  · reply from here" else "  · all quiet",
-                        Modifier.weight(1f), color = Kd.dim, size = 12, maxLines = 1,
-                    )
-                    T("›", color = Kd.dim)
-                }
-            }
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Cell(
-                    Modifier.weight(1f), border = Kd.sage, fill = Kd.bgDark, pad = 10.dp,
-                    arrangement = Arrangement.Start,
-                    onClick = { if (Actions.playlist(act)) say("▶ doom and friends") else say("spotify not found", bad = true) },
-                ) {
-                    T("♪ ", color = Kd.dim, size = 12)
-                    T("doom and friends", Modifier.weight(1f), maxLines = 1)
-                    Box(
-                        Modifier.size(30.dp).clip(RoundedCornerShape(4.dp)).background(Kd.sage),
-                        contentAlignment = Alignment.Center,
-                    ) { T("▶", color = Kd.bg, size = 12) }
-                }
-                Cell(
-                    Modifier.width(88.dp), border = Kd.amber,
-                    onClick = { if (!Actions.wallet(act)) say("wallet not found", bad = true) },
-                ) { T("pay", color = Kd.amber) }
-            }
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                dials.forEach { d ->
-                    Cell(
-                        Modifier.weight(1f), pad = 8.dp, arrangement = Arrangement.Start,
-                        onClick = {
-                            val uri = d.uri
-                            if (uri == null) say("set ${d.label} in cfg", bad = true)
-                            else Actions.call(act, uri)?.let { say(it, bad = true) }
-                        },
-                    ) {
-                        Box(
-                            Modifier.size(26.dp).clip(CircleShape).border(1.dp, Kd.amber, CircleShape),
-                            contentAlignment = Alignment.Center,
-                        ) { T(d.label.take(1).uppercase(), color = Kd.amber, size = 12) }
-                        Spacer(Modifier.width(6.dp))
-                        T(d.label, color = if (d.uri != null) Kd.fg else Kd.dim, maxLines = 1)
-                    }
-                }
-            }
-        }
-
-        // ===== bottom: timers + shop, toggles + brief =====
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Cell(Modifier.width(SQUARE), border = Color.Transparent) { T("min", color = Kd.faint, size = 11) }
-                listOf(5, 10, 25).forEach { m ->
-                    Cell(
-                        Modifier.width(SQUARE),
-                        onClick = { if (Actions.timer(act, m)) say("timer ${m}m ✓") else say("no clock app", bad = true) },
-                    ) { T("$m") }
-                }
-                Cell(
-                    Modifier.weight(1f), fill = Kd.bgDark, pad = 10.dp,
-                    arrangement = Arrangement.SpaceBetween, onClick = onShop,
-                ) {
-                    T("shop")
-                    T(if (shop == null) "–" else "$shop ›", color = Kd.amber)
-                }
-            }
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // ---- timers + shop ----
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Cell(Modifier.width(SQUARE), border = Color.Transparent) { T("min", color = Kd.faint, size = 11) }
+            listOf(5, 10, 25).forEach { m ->
                 Cell(
                     Modifier.width(SQUARE),
-                    border = if (torch) Kd.amber else Kd.border,
-                    fill = if (torch) Kd.amber else Color.Transparent,
-                    onClick = { if (!Actions.setTorch(cm, torchId, !torch)) say("no torch", bad = true) },
-                ) { T("torch", color = if (torch) Kd.bg else Kd.dim, size = 11) }
-                Cell(
-                    Modifier.width(SQUARE), border = Kd.amber,
-                    onClick = { if (!Actions.camera(act)) say("no camera app", bad = true) },
-                ) { T("cam", color = Kd.amber, size = 11) }
-                Cell(Modifier.width(SQUARE), onClick = { Actions.bluetooth(act) }) { T("bt↗", color = Kd.dim, size = 11) }
-                Cell(Modifier.width(SQUARE), onClick = { Actions.wifi(act) }) { T("wifi↗", color = Kd.dim, size = 11) }
-                Cell(Modifier.weight(1f), border = Kd.sage, fill = Kd.sage, onClick = onBrief) {
-                    T("brief me", color = Kd.bg, maxLines = 1)
-                }
+                    onClick = { if (Actions.timer(act, m)) say("timer ${m}m ✓") else say("no clock app", bad = true) },
+                ) { T("$m") }
+            }
+            Cell(
+                Modifier.weight(1f), fill = Kd.bgDark, pad = 10.dp,
+                arrangement = Arrangement.SpaceBetween, onClick = onShop,
+            ) {
+                T("shop")
+                T(if (shop == null) "–" else "$shop ›", color = Kd.amber)
+            }
+        }
+
+        // ---- toggles + brief ----
+        Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Cell(
+                Modifier.width(SQUARE),
+                border = if (torch) Kd.amber else Kd.border,
+                fill = if (torch) Kd.amber else Color.Transparent,
+                onClick = { if (!Actions.setTorch(cm, torchId, !torch)) say("no torch", bad = true) },
+            ) { T("torch", color = if (torch) Kd.bg else Kd.dim, size = 11) }
+            Cell(
+                Modifier.width(SQUARE), border = Kd.amber,
+                onClick = { if (!Actions.camera(act)) say("no camera app", bad = true) },
+            ) { T("cam", color = Kd.amber, size = 11) }
+            Cell(Modifier.width(SQUARE), onClick = { Actions.bluetooth(act) }) { T("bt↗", color = Kd.dim, size = 11) }
+            Cell(Modifier.width(SQUARE), onClick = { Actions.wifi(act) }) { T("wifi↗", color = Kd.dim, size = 11) }
+            Cell(Modifier.weight(1f), border = Kd.sage, fill = Kd.sage, onClick = onBrief) {
+                T("brief me", color = Kd.bg, maxLines = 1)
             }
         }
     }
@@ -425,6 +476,8 @@ fun ShopScreen(hb: Homebase, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var list by remember { mutableStateOf<List<Grocery>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var draft by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
 
     fun load() {
         scope.launch {
@@ -435,10 +488,47 @@ fun ShopScreen(hb: Homebase, onBack: () -> Unit) {
     }
     LaunchedEffect(Unit) { load() }
 
+    /** Typed: commas separate items. Spoken: "milk and eggs" becomes two items. */
+    fun add(text: String, spoken: Boolean) {
+        val parts = if (spoken) text.split(",", " and ") else text.split(",")
+        val names = parts.map { it.trim() }.filter { it.isNotEmpty() }
+        if (names.isEmpty()) return
+        draft = ""
+        status = "adding…"
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { runCatching { names.forEach { hb.addGrocery(it) } } }
+            status = r.exceptionOrNull()?.message ?: ("added " + names.joinToString(", ") { it.lowercase() } + " ✓")
+            load()
+        }
+    }
+
+    val mic = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { add(it, spoken = true) }
+    }
+    fun listen() {
+        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-AU")
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "add to shop")
+        try {
+            mic.launch(i)
+        } catch (e: ActivityNotFoundException) {
+            status = "no voice input, type instead"
+        }
+    }
+
     val shown = list
     val err = error
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         PageHeader("❯ shop", onBack, right = shown?.size?.toString())
+        if (hb.signedIn) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                PageField(draft, { draft = it }, "add item", Modifier.weight(1f), onDone = { add(draft, spoken = false) })
+                Btn("add", Kd.amber) { add(draft, spoken = false) }
+                Btn("mic", Kd.sage) { listen() }
+            }
+            status?.let { T(it, color = Kd.dim, size = 11, maxLines = 1) }
+        }
         when {
             !hb.signedIn -> T("sign in to homebase in cfg", color = Kd.dim)
             err != null -> T(err, color = Kd.red)
@@ -494,8 +584,12 @@ fun Page2Tile(prefs: Prefs) {
     var perm by remember { mutableIntStateOf(0) }
     val contactsOk = remember(perm) { Actions.canReadContacts(ctx) }
     val callOk = remember(perm) { Actions.canCall(ctx) }
+    val usageOk = remember(perm) { Usage.hasAccess(ctx) }
     var inbox by remember { mutableStateOf(prefs.get(Prefs.CAPTURE_DIR)) }
-    val labels = remember { (0..2).map { prefs.get(Prefs.dialLabel(it)) ?: "" }.toMutableStateList() }
+    val labels = remember {
+        (0..2).map { i -> prefs.get(Prefs.dialLabel(i)).orEmpty().let { if (it.equals("mom", true)) "Mum" else it } }
+            .toMutableStateList()
+    }
     val picked = remember { (0..2).map { prefs.get(Prefs.dialUri(it)) }.toMutableStateList() }
     var slot by remember { mutableIntStateOf(-1) }
 
@@ -529,7 +623,13 @@ fun Page2Tile(prefs: Prefs) {
             T("calls     ")
             if (callOk) T("on", color = Tn.green) else T("grant", Modifier.clickable { askPerms() }, color = Tn.yellow)
         }
-        if (!callOk) T("without calls, speed dial opens the dialer instead", color = Tn.dim, size = 11)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            T("usage     ")
+            if (usageOk) T("on", color = Tn.green)
+            else T("open settings", Modifier.clickable { ctx.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }, color = Tn.yellow)
+        }
+        if (!callOk) T("calls lets speed dial ring out with the phone closed", color = Tn.dim, size = 11)
+        if (!usageOk) T("usage access → cover, for the unlocks and screen time line", color = Tn.dim, size = 11)
         T("people uses the media access above", color = Tn.dim, size = 11)
 
         Spacer(Modifier.height(6.dp))
