@@ -12,15 +12,27 @@ import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationManagerCompat
 
 /**
- * Grants access to media sessions (page 1's play tile) and feeds page 2's "people" row.
- * Message notifications are held in memory only while cover runs: never saved, never sent anywhere.
+ * Grants access to media sessions (page 1's play tile), feeds page 2's "people" row (memory only)
+ * and the Signal page's log (the one chat you picked, kept in cover's encrypted storage). Nothing is sent anywhere.
  */
 class MediaListener : NotificationListenerService() {
     private fun resync() = People.sync(runCatching { activeNotifications }.getOrNull())
 
-    override fun onListenerConnected() = resync()
-    override fun onNotificationPosted(sbn: StatusBarNotification?) = resync()
-    override fun onNotificationRemoved(sbn: StatusBarNotification?) = resync()
+    override fun onListenerConnected() {
+        resync()
+        SignalFeed.seed(this, runCatching { activeNotifications }.getOrNull())
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        resync()
+        sbn?.let { SignalFeed.onPosted(this, it) }
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        resync()
+        sbn?.let { SignalFeed.onRemoved(it) }
+    }
+
     override fun onListenerDisconnected() = People.sync(null)
 }
 

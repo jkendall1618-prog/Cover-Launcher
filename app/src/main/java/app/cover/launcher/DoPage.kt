@@ -204,6 +204,7 @@ fun DoPage(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(Modifier.size(6.dp).border(1.dp, Kd.dim, CircleShape))
+                Box(Modifier.size(6.dp).border(1.dp, Kd.dim, CircleShape))
                 Box(Modifier.size(width = 14.dp, height = 6.dp).clip(RoundedCornerShape(3.dp)).background(Kd.amber))
             }
             Spacer(Modifier.width(8.dp))

@@ -1,5 +1,6 @@
 package app.cover.launcher
 
+import android.app.KeyguardManager
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.BatteryManager
@@ -79,6 +80,7 @@ class MainActivity : ComponentActivity() {
         // If Samsung recreated us during the unfold, remember where we were before.
         lastDisplay = savedInstanceState?.getInt(KEY_DISPLAY, Display.INVALID_DISPLAY) ?: Display.INVALID_DISPLAY
         if (closeIfOnInnerScreen(intent)) return
+        setShowWhenLocked(SignalLock.overLock(this))
         setContent { CoverApp(this, resumeTick.intValue) }
     }
 
@@ -96,6 +98,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         if (closeIfOnInnerScreen(null)) return
+        setShowWhenLocked(SignalLock.overLock(this))
         resumeTick.intValue++
     }
 
@@ -174,7 +177,10 @@ fun CoverApp(act: MainActivity, tick: Int) {
     val chat = remember { mutableStateListOf<Turn>() }
 
     // Page 2 state
-    val pager = rememberPagerState(pageCount = { 2 })
+    // Pages: 0 Signal · 1 home (page 1) · 2 do (page 2)
+    val pager = rememberPagerState(initialPage = 1, pageCount = { 3 })
+    val km = remember { ctx.getSystemService(KeyguardManager::class.java) }
+    var locked by remember { mutableStateOf(km?.isKeyguardLocked == true) }
     var shopCount by remember { mutableStateOf<Int?>(null) }
     var wx by remember { mutableStateOf<Wx?>(null) }
     var wxAt by remember { mutableLongStateOf(0L) }
@@ -242,7 +248,7 @@ fun CoverApp(act: MainActivity, tick: Int) {
         query = ""
         // Back after a while away: open on page 1, like a home screen. A quick hop out
         // (a timer, Spotify, Wallet) returns to wherever you were.
-        if (screen == Screen.HOME && act.awayFor() > 30_000L) pager.scrollToPage(0)
+        if (screen == Screen.HOME && act.awayFor() > 30_000L) pager.scrollToPage(1)
         refresh()
     }
 
@@ -259,6 +265,15 @@ fun CoverApp(act: MainActivity, tick: Int) {
         }
     }
 
+    // Lock state, for the Signal page's read-only mode over the lock screen.
+    LaunchedEffect(Unit) {
+        while (true) {
+            locked = km?.isKeyguardLocked == true
+            delay(700)
+        }
+    }
+    val lockView = locked && SignalLock.overLock(ctx)
+
     // Auto-launch as soon as the letters narrow it to one thing.
     LaunchedEffect(query) {
         if (query.isNotEmpty()) {
@@ -270,22 +285,26 @@ fun CoverApp(act: MainActivity, tick: Int) {
         }
     }
 
-    BackHandler(enabled = screen != Screen.HOME || query.isNotEmpty() || pager.currentPage != 0) {
+    BackHandler(enabled = !lockView && (screen != Screen.HOME || query.isNotEmpty() || pager.currentPage != 1)) {
         when {
             screen != Screen.HOME -> screen = Screen.HOME
             query.isNotEmpty() -> query = ""
-            else -> scope.launch { pager.animateScrollToPage(0) }
+            else -> scope.launch { pager.animateScrollToPage(1) }
         }
     }
 
-    // Tokyo Night on page 1, Kanagawa Dragon on page 2, blending while you swipe.
+    // Jade on the Signal page, Tokyo Night on page 1, Kanagawa Dragon on page 2, blending while you swipe.
     val swipe = pager.currentPage + pager.currentPageOffsetFraction
     val pageBg = when {
+        lockView -> Jd.bg
         screen in PAGE2_SCREENS -> Kd.bg
-        screen != Screen.HOME || swipe <= 0f -> Tn.bg
-        swipe >= 1f -> Kd.bg
-        else -> lerp(Tn.bg, Kd.bg, swipe)
+        screen != Screen.HOME || swipe == 1f -> Tn.bg
+        swipe <= 0f -> Jd.bg
+        swipe < 1f -> lerp(Jd.bg, Tn.bg, swipe)
+        swipe >= 2f -> Kd.bg
+        else -> lerp(Tn.bg, Kd.bg, swipe - 1f)
     }
+    val toHome: () -> Unit = { scope.launch { pager.animateScrollToPage(1) } }
 
     Box(
         Modifier
@@ -294,7 +313,9 @@ fun CoverApp(act: MainActivity, tick: Int) {
             .safeDrawingPadding()
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
-        when (screen) {
+        if (lockView) {
+            SignalPage(act, locked = true, onHome = {}, onUnlock = { km?.requestDismissKeyguard(act, null) })
+        } else when (screen) {
             Screen.CHAT -> ChatScreen(claude, chat, onBack = { screen = Screen.HOME })
             Screen.SETTINGS -> SettingsScreen(prefs, hb, claude, tick, onBack = {
                 screen = Screen.HOME
@@ -312,11 +333,13 @@ fun CoverApp(act: MainActivity, tick: Int) {
                 pageSpacing = 16.dp,
                 userScrollEnabled = query.isEmpty(),
             ) { page ->
-            if (page == 1) {
+            if (page == 0) {
+                SignalPage(act, locked = false, onHome = toHome, onUnlock = {})
+            } else if (page == 2) {
                 DoPage(
                     act, prefs, hb, wx, shopCount,
                     onShopAdded = { shopCount = (shopCount ?: 0) + 1 },
-                    onHome = { scope.launch { pager.animateScrollToPage(0) } },
+                    onHome = toHome,
                     onPeople = { screen = Screen.PEOPLE },
                     onShop = { screen = Screen.SHOP },
                     onBrief = { runBrief() },

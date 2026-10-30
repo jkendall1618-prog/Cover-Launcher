@@ -15,7 +15,7 @@ A text-only, Omarchy-style (Tokyo Night) launcher for the Galaxy Z Flip 8 cover 
 
 Typing `ask` or `cover settings` in the grid works too.
 
-## Page 2 (swipe left)
+## Page 2 (swipe left from page 1)
 
 Kanagawa Dragon colours, so you can tell which page you're on at a glance. The background blends between the two as you swipe. Cover reopens on page 1 after it's been away for 30 seconds or more.
 
@@ -46,6 +46,18 @@ Privacy: message notifications stay in memory while cover runs and are never sav
 4. Good Lock → MultiStar → I ♡ Galaxy Foldable → enable **cover** for the cover screen.
 
 Every push to `main` rebuilds the APK and replaces the `latest` release. Updates install over the top because the signing key is fixed (`keys/debug.keystore`, a personal sideload key, not a Play Store key).
+
+## Signal page (swipe right from page 1)
+
+One Signal chat as a terminal-style log, in jade on black. Signal has no API for other apps, so the page is built from Signal's own notifications.
+
+- **Pick the chat** in `● cfg` → signal. The list shows chats that have notified you since this update. Cover tracks the chat by its conversation ID, so group renames don't lose it; the header follows the latest name.
+- **Reply** appears only while Signal has a live notification for the chat (its reply hook). Once you've read the chat elsewhere and Signal clears it, the prompt becomes **open in signal ↗** until the next message arrives.
+- **Only what arrived as a notification is logged.** Nothing from before this update, and nothing you send from Signal itself. Replies sent from cover are logged.
+- Signal's notifications must show name and message, or there's nothing to read.
+- The log is the last 300 lines, kept in cover's encrypted storage on the phone. `clear log` in cfg wipes it.
+
+**Over the lock screen** (cfg → signal → over lock, off by default): while the phone's locked, cover shows only this page, read-only, with an **unlock** button. Turning on "reply also while locked" lets anyone holding the phone reply as you.
 
 ## Takeover (cover as the cover screen's home)
 

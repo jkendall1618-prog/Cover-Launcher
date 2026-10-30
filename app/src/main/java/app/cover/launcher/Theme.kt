@@ -36,6 +36,19 @@ object Kd {
     val red = Color(0xFFC4746E)
 }
 
+/** Jade on black for the Signal page, after Omarchy's Osaka Jade: the "terminal" page. */
+object Jd {
+    val bg = Color(0xFF111C18)
+    val bgDark = Color(0xFF0A120F)
+    val fg = Color(0xFFC1C497)
+    val dim = Color(0xFF8C9A86)
+    val faint = Color(0xFF5E6E62)
+    val border = Color(0xFF23372B)
+    val jade = Color(0xFF63B07A)
+    val gold = Color(0xFFE5C76B)
+    val red = Color(0xFFD9796B)
+}
+
 val Mono = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
     Font(R.font.jetbrains_mono_medium, FontWeight.Medium),

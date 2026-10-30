@@ -181,6 +181,8 @@ fun SettingsScreen(prefs: Prefs, hb: Homebase, claude: Claude, tick: Int, onBack
 
         Page2Tile(prefs)
 
+        SignalTile()
+
         Tile(label = "homebase") {
             if (signedIn) {
                 T("signed in · ${hb.email ?: ""}", color = Tn.green, maxLines = 1)
