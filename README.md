@@ -36,6 +36,8 @@ An accessibility service (`cover takeover`) brings cover back in front whenever 
 2. Settings → Accessibility → Installed apps → **cover takeover** → on.
 3. Go to Samsung's cover home once, open cover again, `● cfg` → takeover, and tap the Samsung home line.
 
+Cover stays off the main screen: it closes itself when unfolding carries it onto the inner display, and the takeover ignores screen 0 even if it was picked. Tapping the cover icon on the main screen on purpose still opens it, so `● cfg` is always reachable there.
+
 ## Later
 
 - More Omarchy themes (Gruvbox, Kanagawa, Matte Black…)

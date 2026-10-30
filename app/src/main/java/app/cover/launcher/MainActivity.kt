@@ -1,7 +1,11 @@
 package app.cover.launcher
 
+import android.content.Intent
+import android.content.res.Configuration
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
+import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -60,17 +64,76 @@ enum class Screen { HOME, CHAT, SETTINGS }
 class MainActivity : ComponentActivity() {
     private val resumeTick = mutableIntStateOf(0)
 
+    /** Screen we were last seen on. Screen 0 is the big inner display; the cover is a separate one. */
+    private var lastDisplay = Display.INVALID_DISPLAY
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // If Samsung recreated us during the unfold, remember where we were before.
+        lastDisplay = savedInstanceState?.getInt(KEY_DISPLAY, Display.INVALID_DISPLAY) ?: Display.INVALID_DISPLAY
+        if (closeIfOnInnerScreen(intent)) return
         setContent { CoverApp(this, resumeTick.intValue) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Icon tapped on purpose (not the takeover): wherever we are now is where you want us.
+        if (!intent.getBooleanExtra(EXTRA_TAKEOVER, false)) {
+            lastDisplay = Display.INVALID_DISPLAY
+            return
+        }
+        closeIfOnInnerScreen(intent)
     }
 
     override fun onResume() {
         super.onResume()
+        if (closeIfOnInnerScreen(null)) return
         resumeTick.intValue++
     }
 
+    // Unfolding moves us to the inner display; we handle screen-size changes ourselves, so this fires instead of a restart.
+    // Only while in front; in the background, onResume makes the call once we know how we got here.
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (isVisible) closeIfOnInnerScreen(null)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(KEY_DISPLAY, currentDisplayId())
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentDisplayId(): Int = runCatching {
+        if (Build.VERSION.SDK_INT >= 30) display?.displayId else windowManager.defaultDisplay.displayId
+    }.getOrNull() ?: Display.INVALID_DISPLAY
+
+    /**
+     * Cover belongs on the cover screen. Close (and drop out of recents) when we land on the
+     * inner screen because the phone was unfolded, or because the takeover put us there.
+     * Opening cover from the main-screen app drawer on purpose still works, so cfg stays reachable.
+     */
+    private fun closeIfOnInnerScreen(launch: Intent?): Boolean {
+        if (isFinishing) return true
+        val now = currentDisplayId()
+        if (now == Display.INVALID_DISPLAY) return false
+        val movedInside = lastDisplay != Display.INVALID_DISPLAY && lastDisplay != Display.DEFAULT_DISPLAY
+        val fromTakeover = launch?.getBooleanExtra(EXTRA_TAKEOVER, false) == true
+        if (now == Display.DEFAULT_DISPLAY && (movedInside || fromTakeover)) {
+            finishAndRemoveTask()
+            return true
+        }
+        lastDisplay = now
+        return false
+    }
+
     val isVisible get() = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+
+    companion object {
+        const val EXTRA_TAKEOVER = "app.cover.launcher.TAKEOVER"
+        private const val KEY_DISPLAY = "display"
+    }
 }
 
 @Composable

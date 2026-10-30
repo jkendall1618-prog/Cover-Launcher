@@ -75,6 +75,8 @@ class CoverWatch : AccessibilityService() {
         Takeover.record(this, seen)
 
         if (!Takeover.enabled(this)) return
+        // Never take over the big inner screen, even if the picked target says screen 0.
+        if (display == Display.DEFAULT_DISPLAY) return
         val target = Takeover.target(this) ?: return
         if (target.pkg != pkg || target.display != display) return
         // Match the window class too when we know it, so e.g. the notification shade doesn't trigger it.
@@ -89,6 +91,7 @@ class CoverWatch : AccessibilityService() {
 
         val intent = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            .putExtra(MainActivity.EXTRA_TAKEOVER, true)
         try {
             startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(display).toBundle())
         } catch (t: Throwable) {
