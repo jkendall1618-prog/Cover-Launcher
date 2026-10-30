@@ -59,6 +59,15 @@ One Signal chat as a terminal-style log, in jade on black. Signal has no API for
 
 **Over the lock screen** (cfg → signal → over lock, off by default): while the phone's locked, cover shows only this page, read-only, with an **unlock** button. Turning on "reply also while locked" lets anyone holding the phone reply as you.
 
+## Page 4: now playing (swipe down from page 1)
+
+Whatever's playing, with the album cover redrawn as `░▒▓█` blocks in Tokyo Night colours, on near-black. Swipe up, tap `↑ home` or press back to return. Like page 2, cover reopens on page 1 after 30 seconds away.
+
+- **The visualiser comes from the cover, not the audio.** Each bar sits under its own column of the art and rests at that column's brightness, so the bars trace the cover's outline. Each bar takes the strongest colour in its column. Dark, flat covers swell slowly; bright, busy ones move fast and jittery. The same album always moves the same way.
+- It doesn't follow the beat: Spotify doesn't share its audio or tempo data with other apps. When paused, the bars settle into a faint copy of the outline.
+- The art is the image the playing app gives Android for its media controls. Nothing is downloaded. If an app sends none, you get an empty grid and a plain purple pulse.
+- Uses the media access you've already granted. The swipe down doesn't count if it starts at the very top edge (that's One UI's pull-down panel) or while you're typing in the launch grid.
+
 ## Takeover (cover as the cover screen's home)
 
 An accessibility service (`cover takeover`) brings cover back in front whenever the window you pick as Samsung's cover home appears on the cover screen. It reads only app and window-class names, never screen content, and does nothing over the lock screen.
@@ -71,6 +80,6 @@ Cover stays off the main screen: it closes itself when unfolding carries it onto
 
 ## Later
 
-- More Omarchy themes (Gruvbox, Matte Black…)
+- More Omarchy themes (Gruvbox…)
 
 Font: JetBrains Mono, SIL Open Font License 1.1 (see `FONT-LICENSE.txt`).

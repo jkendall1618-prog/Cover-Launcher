@@ -10,6 +10,10 @@ import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -65,7 +69,7 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-enum class Screen { HOME, CHAT, SETTINGS, PEOPLE, SHOP, BRIEF }
+enum class Screen { HOME, CHAT, SETTINGS, PEOPLE, SHOP, BRIEF, NOW }
 
 private val PAGE2_SCREENS = setOf(Screen.PEOPLE, Screen.SHOP, Screen.BRIEF)
 
@@ -249,6 +253,8 @@ fun CoverApp(act: MainActivity, tick: Int) {
         // Back after a while away: open on page 1, like a home screen. A quick hop out
         // (a timer, Spotify, Wallet) returns to wherever you were.
         if (screen == Screen.HOME && act.awayFor() > 30_000L) pager.scrollToPage(1)
+        // Page 4 is a page, not a screen you were working in: same rule.
+        if (screen == Screen.NOW && act.awayFor() > 30_000L) screen = Screen.HOME
         refresh()
     }
 
@@ -306,6 +312,7 @@ fun CoverApp(act: MainActivity, tick: Int) {
     }
     val toHome: () -> Unit = { scope.launch { pager.animateScrollToPage(1) } }
 
+    Box(Modifier.fillMaxSize()) {
     Box(
         Modifier
             .fillMaxSize()
@@ -327,11 +334,12 @@ fun CoverApp(act: MainActivity, tick: Int) {
                 refresh()
             })
             Screen.BRIEF -> BriefScreen(brief, briefBusy, briefError, onBack = { screen = Screen.HOME }, onAgain = { runBrief() })
-            Screen.HOME -> HorizontalPager(
+            // Page 4 slides down over the pager, which stays put underneath.
+            Screen.HOME, Screen.NOW -> HorizontalPager(
                 state = pager,
                 modifier = Modifier.fillMaxSize(),
                 pageSpacing = 16.dp,
-                userScrollEnabled = query.isEmpty(),
+                userScrollEnabled = query.isEmpty() && screen == Screen.HOME,
             ) { page ->
             if (page == 0) {
                 SignalPage(act, locked = false, onHome = toHome, onUnlock = {})
@@ -344,7 +352,15 @@ fun CoverApp(act: MainActivity, tick: Int) {
                     onShop = { screen = Screen.SHOP },
                     onBrief = { runBrief() },
                 )
-            } else Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            } else Column(
+                Modifier
+                    .fillMaxSize()
+                    // Swipe down for page 4. Not while typing, and not from the very top, which is One UI's.
+                    .verticalSwipe(down = true, enabled = query.isEmpty() && screen == Screen.HOME, skipTop = 24.dp) {
+                        screen = Screen.NOW
+                    },
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 StatusBar(now, battery, onCfg = { screen = Screen.SETTINGS })
                 if (query.isEmpty()) {
                     CalTile(events, CalendarRepo.hasAccess(ctx))
@@ -391,6 +407,24 @@ fun CoverApp(act: MainActivity, tick: Int) {
             }
             }
         }
+    }
+    // Page 4: now playing, its own near-black so the album's colours lead. Swipe up (or back) to leave.
+    AnimatedVisibility(
+        visible = !lockView && screen == Screen.NOW,
+        enter = slideInVertically(tween(220)) { -it },
+        exit = slideOutVertically(tween(200)) { -it },
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(Mb.bg)
+                .safeDrawingPadding()
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .verticalSwipe(down = false) { screen = Screen.HOME }
+        ) {
+            NowPage(active = { act.isVisible }, onHome = { screen = Screen.HOME })
+        }
+    }
     }
 }
 

@@ -49,6 +49,15 @@ object Jd {
     val red = Color(0xFFD9796B)
 }
 
+/** Near-black for page 4 (after Omarchy's Matte Black), so the album's own colours carry the page. */
+object Mb {
+    val bg = Color(0xFF121212)
+    val fg = Color(0xFFBEBEBE)
+    val dim = Color(0xFF8A8A8D)
+    val faint = Color(0xFF55555A)
+    val border = Color(0xFF2A2A2D)
+}
+
 val Mono = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
     Font(R.font.jetbrains_mono_medium, FontWeight.Medium),
