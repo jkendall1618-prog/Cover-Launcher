@@ -75,6 +75,13 @@ class Prefs(context: Context) {
         const val SP_EXPIRES = "sp_expires"
         const val SP_ARTISTS = "sp_artists"
         const val SP_SCOPE = "sp_scope"
+        /** Artists to scan as [[id, name], …], and when that list was last fetched. */
+        const val SP_ARTIST_LIST = "sp_artist_list"
+        const val SP_ARTISTS_AT = "sp_artists_at"
+        /** Per-artist release check: {id: {"at": ms, "r": [releases]}}. */
+        const val SP_SCAN = "sp_scan"
+        /** Spotify asked for a long wait: no Spotify calls until this time (ms). */
+        const val SP_PAUSED = "sp_paused"
         const val MUSIC_JSON = "music_json"
     }
 }

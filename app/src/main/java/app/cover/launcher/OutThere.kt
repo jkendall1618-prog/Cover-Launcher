@@ -13,7 +13,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
@@ -75,6 +78,10 @@ object Out {
     const val FUEL_EVERY = 30 * 60_000L
     const val DRIVE_EVERY = 10 * 60_000L
     const val MUSIC_EVERY = 12 * 60 * 60_000L
+    /** While some artists' releases are still unchecked, the next small batch goes this soon. */
+    const val SCAN_AGAIN = 15 * 60_000L
+    /** After a failure with nothing to show, try again this soon. */
+    const val MUSIC_RETRY = 30 * 60_000L
 }
 
 // ---------- fuel ----------
@@ -299,7 +306,25 @@ object Drive {
 
 data class Release(val artist: String, val title: String, val date: LocalDate, val uri: String, val single: Boolean)
 data class Gig(val artist: String, val date: LocalDate, val venue: String, val url: String)
-data class Music(val releases: List<Release>, val gigs: List<Gig>, val error: String?, val at: Long)
+/**
+ * [pending]: followed artists whose releases haven't been checked yet, so an empty list isn't "nothing new".
+ * [next]: when the page should refresh again. [gigsAt]: when gigs were last fetched (they keep a 12-hour cycle).
+ */
+data class Music(
+    val releases: List<Release>,
+    val gigs: List<Gig>,
+    val error: String?,
+    val at: Long,
+    val pending: Int = 0,
+    val next: Long = at + Out.MUSIC_EVERY,
+    val gigsAt: Long = at,
+)
+
+/** Spotify asked for a long wait (or kept refusing); no Spotify calls until [until]. */
+class SpotifyPaused(val until: Long) : Exception("rate limited, paused till ${clock(until)}")
+
+private fun clock(ms: Long): String =
+    Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
 
 /** Spotify sign-in (PKCE, no secret on the phone) for followed artists and their new releases. */
 object Spotify {
@@ -350,7 +375,10 @@ object Spotify {
     }
 
     fun disconnect(prefs: Prefs) =
-        prefs.put(Prefs.SP_ACCESS to null, Prefs.SP_REFRESH to null, Prefs.SP_EXPIRES to null, Prefs.SP_ARTISTS to null, Prefs.SP_SCOPE to null)
+        prefs.put(
+            Prefs.SP_ACCESS to null, Prefs.SP_REFRESH to null, Prefs.SP_EXPIRES to null, Prefs.SP_ARTISTS to null, Prefs.SP_SCOPE to null,
+            Prefs.SP_ARTIST_LIST to null, Prefs.SP_ARTISTS_AT to null, Prefs.SP_SCAN to null, Prefs.SP_PAUSED to null,
+        )
 
     private fun post(form: FormBody): JSONObject {
         val req = Request.Builder().url("https://accounts.spotify.com/api/token").post(form).build()
@@ -387,43 +415,95 @@ object Spotify {
         return prefs.get(Prefs.SP_ACCESS)!!
     }
 
+    // ----- rate limits -----
+    // Spotify answers "too many requests" (429) with a Retry-After in seconds. Short waits are slept off once;
+    // a long one is written down and every Spotify call stops until it passes. Retrying early only extends it.
+
+    /** Longest Retry-After worth sleeping through; anything longer pauses Spotify instead. */
+    private const val MAX_WAIT_S = 5L
+    /** Shortest pause, for when Spotify gives no Retry-After or refuses twice in a row. */
+    private const val MIN_PAUSE_S = 120L
+
+    /** When Spotify calls may resume, or 0 if they're not paused. */
+    fun pausedUntil(prefs: Prefs): Long = prefs.getLong(Prefs.SP_PAUSED).takeIf { it > System.currentTimeMillis() } ?: 0L
+
+    private fun checkPaused(prefs: Prefs) {
+        val until = pausedUntil(prefs)
+        if (until > 0) throw SpotifyPaused(until)
+    }
+
+    /** Sleeps off a short Retry-After, or records a pause and throws. */
+    private fun backOff(prefs: Prefs, retryAfter: Long?, lastTry: Boolean) {
+        val s = retryAfter
+        if (s == null || s > MAX_WAIT_S || lastTry) {
+            val until = System.currentTimeMillis() + maxOf(s ?: 0L, MIN_PAUSE_S) * 1000
+            prefs.put(Prefs.SP_PAUSED to until)
+            throw SpotifyPaused(until)
+        }
+        Thread.sleep(s * 1000 + 250)
+    }
+
     private fun api(prefs: Prefs, url: String): JSONObject {
-        repeat(3) {
+        checkPaused(prefs)
+        for (attempt in 1..2) {
             try {
                 return JSONObject(fetch(url, "Authorization" to "Bearer ${token(prefs)}"))
             } catch (e: HttpError) {
                 if (e.code != 429) throw e
-                Thread.sleep(((e.retryAfter ?: 2) * 1000).coerceAtMost(8000))
+                backOff(prefs, e.retryAfter, lastTry = attempt == 2)
             }
         }
-        throw IllegalStateException("spotify is rate limiting, try later")
+        throw IllegalStateException("unreachable")
     }
 
-    /** A PUT with no body, retrying politely when Spotify rate-limits. */
+    /** A PUT with no body, backing off the same way when Spotify rate-limits. */
     private fun put(prefs: Prefs, url: String) {
-        repeat(3) {
+        checkPaused(prefs)
+        for (attempt in 1..2) {
             val req = Request.Builder().url(url)
                 .header("Authorization", "Bearer ${token(prefs)}")
                 .put(ByteArray(0).toRequestBody(null))
                 .build()
-            http.newCall(req).execute().use { r ->
+            val retryAfter = http.newCall(req).execute().use { r ->
                 if (r.isSuccessful) return
                 if (r.code != 429) throw HttpError(r.code)
-                Thread.sleep(((r.header("Retry-After")?.toLongOrNull() ?: 2) * 1000).coerceAtMost(8000))
+                r.header("Retry-After")?.toLongOrNull()
             }
+            backOff(prefs, retryAfter, lastTry = attempt == 2)
         }
-        throw IllegalStateException("spotify is rate limiting, try later")
     }
 
-    /** Followed artists plus your most-played artists of the last six months or so, as (id, name). */
+    /** The artist list saved by the last successful lookup, as (id, name). Empty if there isn't one. */
+    fun cachedArtists(prefs: Prefs): List<Pair<String, String>> {
+        val raw = prefs.get(Prefs.SP_ARTIST_LIST) ?: return emptyList()
+        return runCatching {
+            val a = JSONArray(raw)
+            (0 until a.length()).map { a.getJSONArray(it) }.map { it.getString(0) to it.getString(1) }
+        }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Followed artists plus your most-played artists of the last six months or so, as (id, name).
+     * Looked up at most once a day: the list barely changes, and each lookup is up to 8 requests.
+     */
     fun artists(prefs: Prefs): List<Pair<String, String>> {
-        val top = runCatching {
+        val cached = cachedArtists(prefs)
+        if (cached.isNotEmpty() && System.currentTimeMillis() - prefs.getLong(Prefs.SP_ARTISTS_AT) < 24 * 3_600_000L) return cached
+        val top = try {
             val items = api(prefs, "https://api.spotify.com/v1/me/top/artists?time_range=medium_term&limit=50")
                 .optJSONArray("items") ?: JSONArray()
             (0 until items.length()).map { items.getJSONObject(it) }.map { it.getString("id") to it.getString("name") }
-        }.getOrDefault(emptyList()) // older connections can't read top artists until reconnected
+        } catch (e: SpotifyPaused) {
+            throw e
+        } catch (e: Exception) {
+            emptyList() // older connections can't read top artists until reconnected
+        }
         val all = (followed(prefs) + top).distinctBy { it.first }
-        prefs.put(Prefs.SP_ARTISTS to JSONArray(all.map { it.second }).toString())
+        prefs.put(
+            Prefs.SP_ARTIST_LIST to JSONArray(all.map { JSONArray().put(it.first).put(it.second) }).toString(),
+            Prefs.SP_ARTISTS_AT to System.currentTimeMillis(),
+            Prefs.SP_ARTISTS to JSONArray(all.map { it.second }).toString(),
+        )
         return all
     }
 
@@ -491,27 +571,94 @@ object Spotify {
             done += chunk.size
             Thread.sleep(200)
         }
+        prefs.put(Prefs.SP_ARTISTS_AT to null) // re-read the artist list next refresh so the new follows get scanned
         return done
     }
 
-    /** Albums and singles from followed artists released in the last [days] days, newest first. */
-    fun releases(prefs: Prefs, artists: List<Pair<String, String>>, days: Long = 30): List<Release> {
+    // ----- new releases -----
+    // Spotify has no "new from artists I follow" call, so it's one request per artist. Hundreds of those in a
+    // burst is what trips the rate limit, so artists are checked in small, spaced batches and each result is
+    // kept, so a refresh only asks about the artists whose last check is out of date.
+
+    /** Release lookups this far apart: about two a second. */
+    private const val GAP_MS = 500L
+    /** Artists checked per refresh; the rest wait for the next batch. */
+    private const val BATCH = 60
+    /** An artist's last check counts as current for this long. */
+    private const val STALE_MS = 20 * 3_600_000L
+    /** Releases kept per artist, in days, so the 30-day window is always covered. */
+    private const val KEEP_DAYS = 45L
+
+    /**
+     * [unchecked]: artists never checked yet, so their releases are unknown.
+     * [moreDue]: artists still out of date after this batch, so another batch should follow soon.
+     * [error]: what stopped this batch early, if anything; [releases] still holds everything known.
+     */
+    class Scan(val releases: List<Release>, val unchecked: Int, val moreDue: Boolean, val error: Exception?)
+
+    /** Checks the next batch of out-of-date artists and returns every release known from the last [days] days. */
+    fun scan(prefs: Prefs, artists: List<Pair<String, String>>, days: Long = 30): Scan {
+        val ids = artists.map { it.first }.toSet()
+        val old = runCatching { JSONObject(prefs.get(Prefs.SP_SCAN) ?: "{}") }.getOrDefault(JSONObject())
+        val state = JSONObject()
+        old.keys().forEach { k -> if (k in ids) old.optJSONObject(k)?.let { state.put(k, it) } } // unfollowed artists drop out
+
+        fun lastChecked(id: String) = state.optJSONObject(id)?.optLong("at") ?: 0L
+        val start = System.currentTimeMillis()
+        val due = artists.filter { start - lastChecked(it.first) > STALE_MS }.sortedBy { lastChecked(it.first) }
+
+        val keepSince = LocalDate.now().minusDays(KEEP_DAYS)
+        var error: Exception? = null
+        try {
+            for ((i, artist) in due.take(BATCH).withIndex()) {
+                val (id, name) = artist
+                if (i > 0) Thread.sleep(GAP_MS)
+                val items = try {
+                    api(prefs, "https://api.spotify.com/v1/artists/$id/albums?include_groups=album,single&market=AU&limit=10")
+                        .optJSONArray("items") ?: JSONArray()
+                } catch (e: HttpError) {
+                    if (e.code != 400 && e.code != 404) throw e
+                    JSONArray() // artist gone from Spotify: count it as checked, nothing new
+                }
+                val found = JSONArray()
+                for (k in 0 until items.length()) {
+                    val a = items.getJSONObject(k)
+                    if (a.optString("release_date_precision") != "day") continue
+                    val d = runCatching { LocalDate.parse(a.getString("release_date")) }.getOrNull() ?: continue
+                    if (d.isBefore(keepSince)) continue
+                    found.put(
+                        JSONObject().put("t", a.optString("name")).put("d", d.toString())
+                            .put("u", a.optString("uri")).put("s", a.optString("album_type") == "single"),
+                    )
+                }
+                state.put(id, JSONObject().put("at", System.currentTimeMillis()).put("n", name).put("r", found))
+                if (i % 10 == 9) prefs.put(Prefs.SP_SCAN to state.toString()) // keep progress if the app is closed
+            }
+        } catch (e: Exception) {
+            error = e
+        }
+        prefs.put(Prefs.SP_SCAN to state.toString())
+
         val since = LocalDate.now().minusDays(days)
+        val latest = LocalDate.now().plusDays(1)
         val out = LinkedHashMap<String, Release>()
         for ((id, name) in artists) {
-            val items = api(prefs, "https://api.spotify.com/v1/artists/$id/albums?include_groups=album,single&market=AU&limit=10")
-                .optJSONArray("items") ?: continue
-            for (i in 0 until items.length()) {
-                val a = items.getJSONObject(i)
-                if (a.optString("release_date_precision") != "day") continue
-                val d = runCatching { LocalDate.parse(a.getString("release_date")) }.getOrNull() ?: continue
-                if (d.isBefore(since) || d.isAfter(LocalDate.now().plusDays(1))) continue
-                val uri = a.optString("uri")
-                out.putIfAbsent(uri, Release(name, a.optString("name"), d, uri, a.optString("album_type") == "single"))
+            val r = state.optJSONObject(id)?.optJSONArray("r") ?: continue
+            for (k in 0 until r.length()) {
+                val x = r.getJSONObject(k)
+                val d = runCatching { LocalDate.parse(x.getString("d")) }.getOrNull() ?: continue
+                if (d.isBefore(since) || d.isAfter(latest)) continue
+                val uri = x.optString("u")
+                out.putIfAbsent(uri, Release(name, x.optString("t"), d, uri, x.optBoolean("s")))
             }
-            Thread.sleep(60)
         }
-        return out.values.sortedByDescending { it.date }.take(40)
+        val now = System.currentTimeMillis()
+        return Scan(
+            releases = out.values.sortedByDescending { it.date }.take(40),
+            unchecked = artists.count { lastChecked(it.first) == 0L },
+            moreDue = artists.any { now - lastChecked(it.first) > STALE_MS },
+            error = error,
+        )
     }
 }
 
@@ -556,45 +703,103 @@ object Gigs {
     }
 }
 
-/** Releases and gigs together, cached for 12 hours in cover's storage. */
+/**
+ * Releases and gigs together, kept in cover's storage. Gigs refresh every 12 hours; releases are checked in
+ * batches (see [Spotify.scan]), so a refresh may come sooner while artists are still waiting to be checked.
+ * A failed refresh never throws away what's already known.
+ */
 object MusicFeed {
-    fun cached(prefs: Prefs): Music? = runCatching {
-        val j = JSONObject(prefs.get(Prefs.MUSIC_JSON) ?: return null)
-        val r = j.getJSONArray("r")
-        val g = j.getJSONArray("g")
-        Music(
-            (0 until r.length()).map { r.getJSONObject(it) }.map {
-                Release(it.getString("a"), it.getString("t"), LocalDate.parse(it.getString("d")), it.getString("u"), it.optBoolean("s"))
-            },
-            (0 until g.length()).map { g.getJSONObject(it) }.map {
-                Gig(it.getString("a"), LocalDate.parse(it.getString("d")), it.getString("v"), it.getString("u"))
-            }.filter { !it.date.isBefore(LocalDate.now()) },
-            j.optString("e").takeIf { it.isNotBlank() },
-            j.getLong("at"),
-        )
-    }.getOrNull()
+    fun cached(prefs: Prefs): Music? {
+        val raw = prefs.get(Prefs.MUSIC_JSON) ?: return null
+        return runCatching {
+            val j = JSONObject(raw)
+            val r = j.getJSONArray("r")
+            val g = j.getJSONArray("g")
+            val at = j.getLong("at")
+            Music(
+                (0 until r.length()).map { r.getJSONObject(it) }.map {
+                    Release(it.getString("a"), it.getString("t"), LocalDate.parse(it.getString("d")), it.getString("u"), it.optBoolean("s"))
+                }.filter { !it.date.isBefore(LocalDate.now().minusDays(30)) },
+                (0 until g.length()).map { g.getJSONObject(it) }.map {
+                    Gig(it.getString("a"), LocalDate.parse(it.getString("d")), it.getString("v"), it.getString("u"))
+                }.filter { !it.date.isBefore(LocalDate.now()) },
+                j.optString("e").takeIf { it.isNotBlank() },
+                at,
+                pending = j.optInt("p", 0),
+                next = j.optLong("n", at + Out.MUSIC_EVERY),
+                gigsAt = j.optLong("ga", at),
+            )
+        }.getOrNull()
+    }
 
-    fun refresh(prefs: Prefs): Music {
-        val errors = ArrayList<String>()
-        var releases = emptyList<Release>()
-        var names: List<String> = emptyList()
+    private fun describe(e: Throwable): String = when (e) {
+        is SpotifyPaused -> e.message.orEmpty()
+        else -> e.message ?: e.javaClass.simpleName
+    }
+
+    /** [force]: the refresh button, which also re-fetches gigs. Spotify's batch size and pauses still apply. */
+    fun refresh(prefs: Prefs, force: Boolean = false): Music {
+        val prev = cached(prefs)
+        val now = System.currentTimeMillis()
+        var spotifyError: Throwable? = null
+        var releases = prev?.releases ?: emptyList()
+        var pending = prev?.pending ?: 0
+        var moreDue = false
+        var artists: List<Pair<String, String>> = emptyList()
+
         if (Spotify.connected(prefs)) {
-            runCatching {
-                val artists = Spotify.artists(prefs)
-                names = artists.map { it.second }
-                releases = Spotify.releases(prefs, artists)
-            }.onFailure { errors += "spotify: ${it.message}" }
+            artists = try {
+                Spotify.artists(prefs)
+            } catch (e: Exception) {
+                spotifyError = e
+                Spotify.cachedArtists(prefs)
+            }
+            if (artists.isNotEmpty()) {
+                val scan = Spotify.scan(prefs, artists)
+                releases = scan.releases
+                pending = scan.unchecked
+                moreDue = scan.moreDue
+                if (spotifyError == null) spotifyError = scan.error
+            }
         } else {
-            errors += "connect spotify in cfg"
+            releases = emptyList()
+            pending = 0
         }
-        val gigs = if (names.isEmpty()) emptyList() else runCatching { Gigs.load(prefs, names) }
-            .onFailure { errors += "gigs: ${it.message}" }.getOrDefault(emptyList())
-        val m = Music(releases, gigs, errors.joinToString(" · ").takeIf { it.isNotBlank() }, System.currentTimeMillis())
+
+        // Gigs: matched against artist names, so a Spotify hiccup falls back to the last known names.
+        val names = artists.map { it.second }.ifEmpty {
+            runCatching { JSONArray(prefs.get(Prefs.SP_ARTISTS) ?: "[]").let { a -> (0 until a.length()).map { a.getString(it) } } }
+                .getOrDefault(emptyList())
+        }
+        var gigs = prev?.gigs ?: emptyList()
+        var gigsAt = prev?.gigsAt ?: 0L
+        var gigError: Throwable? = null
+        if (names.isNotEmpty() && (force || prev == null || now - gigsAt >= Out.MUSIC_EVERY)) {
+            runCatching { Gigs.load(prefs, names) }
+                .onSuccess { gigs = it; gigsAt = now }
+                .onFailure { gigError = it }
+        }
+
+        val errors = listOfNotNull(
+            if (!Spotify.connected(prefs)) "connect spotify in cfg" else spotifyError?.let { "spotify: ${describe(it)}" },
+            gigError?.let { "gigs: ${describe(it)}" },
+        )
+        val paused = Spotify.pausedUntil(prefs)
+        val next = when {
+            paused > 0 -> paused + 60_000L
+            errors.isNotEmpty() -> now + Out.MUSIC_RETRY
+            moreDue -> now + Out.SCAN_AGAIN
+            else -> now + Out.MUSIC_EVERY
+        }
+        val m = Music(releases, gigs, errors.joinToString(" · ").takeIf { it.isNotBlank() }, now, pending, next, gigsAt)
         val j = JSONObject()
             .put("r", JSONArray(releases.map { JSONObject().put("a", it.artist).put("t", it.title).put("d", it.date.toString()).put("u", it.uri).put("s", it.single) }))
             .put("g", JSONArray(gigs.map { JSONObject().put("a", it.artist).put("d", it.date.toString()).put("v", it.venue).put("u", it.url) }))
             .put("e", m.error ?: "")
             .put("at", m.at)
+            .put("p", m.pending)
+            .put("n", m.next)
+            .put("ga", m.gigsAt)
         prefs.put(Prefs.MUSIC_JSON to j.toString())
         return m
     }

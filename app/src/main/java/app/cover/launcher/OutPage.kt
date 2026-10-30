@@ -82,24 +82,27 @@ private fun play(act: Activity, uri: String) {
     }
 }
 
-/** Fetches releases and gigs in the background; survives the page closing. */
-fun refreshMusic(act: MainActivity, prefs: Prefs) {
+/** Fetches releases and gigs in the background; survives the page closing. MusicFeed decides when the next one is due. */
+fun refreshMusic(act: MainActivity, prefs: Prefs, force: Boolean = false) {
     if (Out.musicBusy) return
     Out.musicBusy = true
     act.lifecycleScope.launch {
         try {
-            val m = withContext(Dispatchers.IO) { MusicFeed.refresh(prefs) }
-            // Nothing came back and something failed: try again in half an hour, not twelve.
-            Out.music = if (m.error != null && m.releases.isEmpty() && m.gigs.isEmpty()) {
-                m.copy(at = m.at - Out.MUSIC_EVERY + 30 * 60_000L)
-            } else {
-                m
-            }
+            Out.music = withContext(Dispatchers.IO) { MusicFeed.refresh(prefs, force) }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            // Something unexpected: keep what's showing and wait before trying again, rather than every 20 s.
+            val t = System.currentTimeMillis()
+            Out.music = (Out.music ?: Music(emptyList(), emptyList(), null, t))
+                .copy(error = "music: ${e.message ?: "refresh failed"}", next = t + Out.MUSIC_RETRY)
         } finally {
             Out.musicBusy = false
         }
     }
 }
+
+/** True when there's no music yet or the last refresh says another is due. */
+private fun musicDue(t: Long): Boolean = Out.music.let { it == null || t >= it.next }
 
 private data class Bar(val label: String, val fraction: Double, val color: Color)
 
@@ -160,8 +163,7 @@ fun OutPage(
                     if (r.isFailure) Out.driveAt = t - Out.DRIVE_EVERY + 120_000L
                     if (r.isSuccess || Out.drive?.isSuccess != true) Out.drive = r
                 }
-                val m = Out.music
-                if (m == null || t - m.at > Out.MUSIC_EVERY) refreshMusic(act, prefs)
+                if (musicDue(t)) refreshMusic(act, prefs)
             }
             delay(20_000)
         }
@@ -271,6 +273,8 @@ private fun MusicQuad(modifier: Modifier, onMusic: () -> Unit) {
         if (rel != null) {
             T("◉ new · " + ago(rel.date), color = Gb.aqua, size = 11, maxLines = 1)
             T("${rel.artist} — ${rel.title}".lowercase(), color = Gb.fg, size = 12, maxLines = 2)
+        } else if (m.pending > 0) {
+            T("checking releases… ${m.pending} to go", color = Gb.gray, size = 11, maxLines = 1)
         } else {
             T("nothing new this month", color = Gb.gray, size = 11)
         }
@@ -303,6 +307,11 @@ fun MusicScreen(act: MainActivity, prefs: Prefs, onBack: () -> Unit) {
     val m = Out.music
     LaunchedEffect(Unit) {
         if (Out.music == null) Out.music = withContext(Dispatchers.IO) { MusicFeed.cached(prefs) }
+        // Page 5's loop isn't running while this page is open, so keep the release batches going here.
+        while (true) {
+            if (act.isVisible && musicDue(System.currentTimeMillis())) refreshMusic(act, prefs)
+            delay(20_000)
+        }
     }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -311,7 +320,7 @@ fun MusicScreen(act: MainActivity, prefs: Prefs, onBack: () -> Unit) {
             if (Out.musicBusy) {
                 T("fetching…", Modifier.padding(6.dp), color = Gb.gray, size = 12)
             } else {
-                T("refresh", Modifier.clickable { refreshMusic(act, prefs) }.padding(6.dp), color = Gb.aqua, size = 12)
+                T("refresh", Modifier.clickable { refreshMusic(act, prefs, force = true) }.padding(6.dp), color = Gb.aqua, size = 12)
             }
             T("esc", Modifier.clickable(onClick = onBack).padding(6.dp), color = Gb.gray, size = 12)
         }
@@ -337,7 +346,13 @@ fun MusicScreen(act: MainActivity, prefs: Prefs, onBack: () -> Unit) {
                 }
             }
             if (m == null || m.releases.isEmpty()) {
-                item { T("nothing new from artists you follow", color = Gb.gray, size = 12) }
+                // Only say "nothing new" once every artist has actually been checked.
+                val msg = when {
+                    m == null -> "not checked yet"
+                    m.pending > 0 -> "still checking · ${m.pending} artists to go"
+                    else -> "nothing new from artists you follow"
+                }
+                item { T(msg, color = Gb.gray, size = 12) }
             } else {
                 items(m.releases) { r ->
                     Row(Modifier.fillMaxWidth().clickable { play(act, r.uri) }.padding(vertical = 3.dp)) {
@@ -349,6 +364,7 @@ fun MusicScreen(act: MainActivity, prefs: Prefs, onBack: () -> Unit) {
                         T("▶", color = Gb.green, size = 12)
                     }
                 }
+                if (m.pending > 0) item { T("${m.pending} artists still to check", color = Gb.gray, size = 11) }
             }
             item {
                 Column {
