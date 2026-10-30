@@ -40,5 +40,11 @@ class Prefs(context: Context) {
         const val HB_EXPIRES = "hb_expires"
         const val HB_USER = "hb_user"
         const val ANTHROPIC_KEY = "anthropic_key"
+
+        // Page 2
+        const val CAPTURE_DIR = "capture_dir"
+        fun dialLabel(i: Int) = "dial_label_$i"
+        fun dialUri(i: Int) = "dial_uri_$i"
+        val DIAL_DEFAULTS = listOf("Jac", "Mom", "Dad")
     }
 }

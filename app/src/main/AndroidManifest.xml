@@ -3,9 +3,18 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <!-- Page 2: timers, speed dial (number looked up at tap time, never stored). -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+
+    <!-- Speed dial calls; the phone hardware isn't required to install. -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
 
     <!-- Lets the launcher see every app that has a home-screen icon. -->
     <queries>
+        <package android:name="com.spotify.music" />
+        <package android:name="com.google.android.apps.walletnfcrel" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />

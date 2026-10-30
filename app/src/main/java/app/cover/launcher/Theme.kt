@@ -23,6 +23,19 @@ object Tn {
     val yellow = Color(0xFFE0AF68)
 }
 
+/** Kanagawa Dragon, another Omarchy theme: warm ink for page 2 so it reads as "the other page" at a glance. */
+object Kd {
+    val bg = Color(0xFF181616)
+    val bgDark = Color(0xFF0D0C0C)
+    val fg = Color(0xFFC5C9C5)
+    val dim = Color(0xFFA6A69C)
+    val faint = Color(0xFF737C73)
+    val border = Color(0xFF393836)
+    val amber = Color(0xFFE6C384)
+    val sage = Color(0xFF87A987)
+    val red = Color(0xFFC4746E)
+}
+
 val Mono = FontFamily(
     Font(R.font.jetbrains_mono_regular, FontWeight.Normal),
     Font(R.font.jetbrains_mono_medium, FontWeight.Medium),

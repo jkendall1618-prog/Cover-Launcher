@@ -15,6 +15,24 @@ A text-only, Omarchy-style (Tokyo Night) launcher for the Galaxy Z Flip 8 cover 
 
 Typing `ask` or `cover settings` in the grid works too.
 
+## Page 2 (swipe left)
+
+Kanagawa Dragon colours, so you can tell which page you're on at a glance. The background blends between the two as you swipe. Cover reopens on page 1 after it's been away for 30 seconds or more.
+
+| Row | What it does |
+| --- | --- |
+| status | page dots (tap to go back) · weather for Spring Mountain from Open-Meteo, e.g. `24° rain from 3pm` |
+| capture | type or tap `mic`; each entry becomes its own dated `.md` note in the inbox folder picked in cfg |
+| people | message notifications from people · tap for the list, reply in place or open the conversation |
+| doom and friends · pay | plays the playlist (through Spotify's session if it allows, otherwise opens it) · opens Google Wallet |
+| speed dial | three contacts picked in cfg; the number is looked up when you tap, never stored |
+| min 5 10 25 · shop | one-tap timers · unticked Homebase grocery items, tap to see and tick them off |
+| torch cam bt↗ wifi↗ · brief me | torch toggle · camera · Bluetooth and Wi-Fi settings (Android won't let apps flip those directly) · a three-line rundown of your day from Claude |
+
+Set up once in `● cfg` → **page 2**: grant contacts and calls, pick the inbox folder, label and pick the three speed-dial contacts. People uses the media access you've already granted.
+
+Privacy: message notifications stay in memory while cover runs and are never saved or sent. "brief me" sends your upcoming calendar titles, open todo titles, the weather line and the grocery count to Claude, nothing else.
+
 ## Install
 
 1. On the phone, open the repo's **Releases → latest** and download `cover-launcher.apk`.
@@ -40,6 +58,6 @@ Cover stays off the main screen: it closes itself when unfolding carries it onto
 
 ## Later
 
-- More Omarchy themes (Gruvbox, Kanagawa, Matte Black…)
+- More Omarchy themes (Gruvbox, Matte Black…)
 
 Font: JetBrains Mono, SIL Open Font License 1.1 (see `FONT-LICENSE.txt`).

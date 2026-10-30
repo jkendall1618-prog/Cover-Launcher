@@ -19,6 +19,8 @@ data class Task(
     val owner: String,
 )
 
+data class Grocery(val id: String, val name: String, val aisle: String)
+
 /**
  * Talks to Homebase's Supabase as the signed-in user, so the same row-level security
  * applies as in the Homebase app. Only the session tokens are stored, never the password.
@@ -63,6 +65,21 @@ class Homebase(private val prefs: Prefs) {
         }
         // Yours and the family's; your partner's own tasks stay in Homebase.
         return all.filter { it.owner == "family" || it.owner == me }.take(limit)
+    }
+
+    /** Unticked grocery list items, in aisle order like Homebase shows them. */
+    fun groceries(): List<Grocery> {
+        if (!signedIn) return emptyList()
+        val arr = JSONArray(get("/rest/v1/grocery_items?select=id,name,aisle&done=is.false&order=aisle.asc,created_at.asc&limit=100"))
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            Grocery(o.getString("id"), o.optString("name"), o.optString("aisle", "Other"))
+        }
+    }
+
+    fun tick(g: Grocery) {
+        val patch = JSONObject().put("done", true).put("done_at", Instant.now().toString())
+        send("PATCH", "/rest/v1/grocery_items?id=eq.${g.id}", patch.toString())
     }
 
     /** Mirrors Homebase's own "complete": repeating tasks roll forward, one-offs are marked done. */

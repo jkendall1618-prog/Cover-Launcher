@@ -49,6 +49,17 @@ class Claude(private val prefs: Prefs) {
         }
     }
 
+    /** Page 2's "brief me": one question built from today's calendar, todos and weather. */
+    fun brief(facts: String): String = ask(
+        listOf(
+            Turn(
+                "user",
+                "Brief me on my day in three short lines: what's on, what to get done, anything to plan around. " +
+                    "Only use these facts, don't invent anything.\n\n$facts",
+            ),
+        ),
+    )
+
     companion object {
         const val MODEL = "claude-haiku-5-5"
         const val SYSTEM = "You are answering on a small phone cover screen, about 30 characters wide. " +

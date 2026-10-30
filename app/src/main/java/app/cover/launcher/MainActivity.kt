@@ -9,10 +9,13 @@ import android.view.Display
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -59,7 +64,9 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-enum class Screen { HOME, CHAT, SETTINGS }
+enum class Screen { HOME, CHAT, SETTINGS, PEOPLE, SHOP, BRIEF }
+
+private val PAGE2_SCREENS = setOf(Screen.PEOPLE, Screen.SHOP, Screen.BRIEF)
 
 class MainActivity : ComponentActivity() {
     private val resumeTick = mutableIntStateOf(0)
@@ -99,6 +106,16 @@ class MainActivity : ComponentActivity() {
         if (isVisible) closeIfOnInnerScreen(null)
     }
 
+    /** When cover last left the screen; page 2 uses it to decide whether to reopen on page 1. */
+    private var stoppedAt = 0L
+
+    override fun onStop() {
+        super.onStop()
+        stoppedAt = System.currentTimeMillis()
+    }
+
+    fun awayFor(): Long = if (stoppedAt == 0L) 0L else System.currentTimeMillis() - stoppedAt
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(KEY_DISPLAY, currentDisplayId())
@@ -136,6 +153,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CoverApp(act: MainActivity, tick: Int) {
     val ctx = LocalContext.current
@@ -155,6 +173,15 @@ fun CoverApp(act: MainActivity, tick: Int) {
     var battery by remember { mutableIntStateOf(0) }
     val chat = remember { mutableStateListOf<Turn>() }
 
+    // Page 2 state
+    val pager = rememberPagerState(pageCount = { 2 })
+    var shopCount by remember { mutableStateOf<Int?>(null) }
+    var wx by remember { mutableStateOf<Wx?>(null) }
+    var wxAt by remember { mutableLongStateOf(0L) }
+    var brief by remember { mutableStateOf<String?>(null) }
+    var briefBusy by remember { mutableStateOf(false) }
+    var briefError by remember { mutableStateOf<String?>(null) }
+
     fun refresh() {
         scope.launch {
             apps = withContext(Dispatchers.IO) { Apps.load(ctx) }
@@ -162,6 +189,43 @@ fun CoverApp(act: MainActivity, tick: Int) {
             val r = withContext(Dispatchers.IO) { runCatching { hb.openTasks() } }
             tasks = r.getOrDefault(emptyList())
             taskError = r.exceptionOrNull()?.message
+            // Page 2: grocery count, and weather at most every 20 minutes.
+            shopCount = if (hb.signedIn) withContext(Dispatchers.IO) { runCatching { hb.groceries().size }.getOrNull() } else null
+            if (System.currentTimeMillis() - wxAt > 20 * 60_000L) {
+                withContext(Dispatchers.IO) { runCatching { Weather.now() } }.onSuccess {
+                    wx = it
+                    wxAt = System.currentTimeMillis()
+                }
+            }
+        }
+    }
+
+    fun runBrief() {
+        screen = Screen.BRIEF
+        if (briefBusy) return
+        briefBusy = true
+        briefError = null
+        brief = null
+        val todos = tasks.map { it.title }
+        val weather = wx
+        val groceries = shopCount
+        scope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val today = LocalDate.now()
+                    val upcoming = CalendarRepo.upcoming(ctx, 8)
+                    val facts = buildString {
+                        appendLine("Today is " + today.format(DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.ENGLISH)) + ".")
+                        appendLine("Calendar (next 7 days): " + if (upcoming.isEmpty()) "nothing" else upcoming.joinToString("; ") { it.whenLabel.trim() + " " + it.title })
+                        appendLine("Open todos: " + if (todos.isEmpty()) "none" else todos.joinToString("; "))
+                        if (weather != null) appendLine("Weather: ${weather.temp}°C, ${weather.note}.")
+                        if (groceries != null) appendLine("Grocery list: $groceries items.")
+                    }
+                    claude.brief(facts)
+                }
+            }
+            r.onSuccess { brief = it }.onFailure { briefError = it.message }
+            briefBusy = false
         }
     }
 
@@ -176,6 +240,9 @@ fun CoverApp(act: MainActivity, tick: Int) {
 
     LaunchedEffect(tick) {
         query = ""
+        // Back after a while away: open on page 1, like a home screen. A quick hop out
+        // (a timer, Spotify, Wallet) returns to wherever you were.
+        if (screen == Screen.HOME && act.awayFor() > 30_000L) pager.scrollToPage(0)
         refresh()
     }
 
@@ -203,14 +270,27 @@ fun CoverApp(act: MainActivity, tick: Int) {
         }
     }
 
-    BackHandler(enabled = screen != Screen.HOME || query.isNotEmpty()) {
-        if (screen != Screen.HOME) screen = Screen.HOME else query = ""
+    BackHandler(enabled = screen != Screen.HOME || query.isNotEmpty() || pager.currentPage != 0) {
+        when {
+            screen != Screen.HOME -> screen = Screen.HOME
+            query.isNotEmpty() -> query = ""
+            else -> scope.launch { pager.animateScrollToPage(0) }
+        }
+    }
+
+    // Tokyo Night on page 1, Kanagawa Dragon on page 2, blending while you swipe.
+    val swipe = pager.currentPage + pager.currentPageOffsetFraction
+    val pageBg = when {
+        screen in PAGE2_SCREENS -> Kd.bg
+        screen != Screen.HOME || swipe <= 0f -> Tn.bg
+        swipe >= 1f -> Kd.bg
+        else -> lerp(Tn.bg, Kd.bg, swipe)
     }
 
     Box(
         Modifier
             .fillMaxSize()
-            .background(Tn.bg)
+            .background(pageBg)
             .safeDrawingPadding()
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
@@ -220,7 +300,27 @@ fun CoverApp(act: MainActivity, tick: Int) {
                 screen = Screen.HOME
                 refresh()
             })
-            Screen.HOME -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Screen.PEOPLE -> PeopleScreen(act, onBack = { screen = Screen.HOME })
+            Screen.SHOP -> ShopScreen(hb, onBack = {
+                screen = Screen.HOME
+                refresh()
+            })
+            Screen.BRIEF -> BriefScreen(brief, briefBusy, briefError, onBack = { screen = Screen.HOME }, onAgain = { runBrief() })
+            Screen.HOME -> HorizontalPager(
+                state = pager,
+                modifier = Modifier.fillMaxSize(),
+                pageSpacing = 16.dp,
+                userScrollEnabled = query.isEmpty(),
+            ) { page ->
+            if (page == 1) {
+                DoPage(
+                    act, prefs, wx, shopCount,
+                    onHome = { scope.launch { pager.animateScrollToPage(0) } },
+                    onPeople = { screen = Screen.PEOPLE },
+                    onShop = { screen = Screen.SHOP },
+                    onBrief = { runBrief() },
+                )
+            } else Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 StatusBar(now, battery, onCfg = { screen = Screen.SETTINGS })
                 if (query.isEmpty()) {
                     CalTile(events, CalendarRepo.hasAccess(ctx))
@@ -264,6 +364,7 @@ fun CoverApp(act: MainActivity, tick: Int) {
                     },
                     onClear = { query = "" },
                 )
+            }
             }
         }
     }

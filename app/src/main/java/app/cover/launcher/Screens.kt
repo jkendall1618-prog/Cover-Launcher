@@ -179,6 +179,8 @@ fun SettingsScreen(prefs: Prefs, hb: Homebase, claude: Claude, tick: Int, onBack
 
         TakeoverTile(tick + perm)
 
+        Page2Tile(prefs)
+
         Tile(label = "homebase") {
             if (signedIn) {
                 T("signed in · ${hb.email ?: ""}", color = Tn.green, maxLines = 1)
