@@ -208,8 +208,8 @@ fun CoverApp(act: MainActivity, tick: Int) {
     val chat = remember { mutableStateListOf<Turn>() }
 
     // Page 2 state
-    // Pages: 0 Signal · 1 home (page 1) · 2 do (page 2)
-    val pager = rememberPagerState(initialPage = 1, pageCount = { 3 })
+    // Pages: 0 Signal · 1 home (page 1) · 2 do (page 2) · 3 map
+    val pager = rememberPagerState(initialPage = 1, pageCount = { 4 })
     val km = remember { ctx.getSystemService(KeyguardManager::class.java) }
     var locked by remember { mutableStateOf(km?.isKeyguardLocked == true) }
     var shopCount by remember { mutableStateOf<Int?>(null) }
@@ -344,7 +344,7 @@ fun CoverApp(act: MainActivity, tick: Int) {
         }
     }
 
-    // Jade on the Signal page, Tokyo Night on page 1, Kanagawa Dragon on page 2, blending while you swipe.
+    // Jade on the Signal page, Tokyo Night on page 1, Kanagawa Dragon on page 2, Nord on the map, blending while you swipe.
     val swipe = pager.currentPage + pager.currentPageOffsetFraction
     val pageBg = when {
         lockView -> Jd.bg
@@ -352,6 +352,8 @@ fun CoverApp(act: MainActivity, tick: Int) {
         screen != Screen.HOME || swipe == 1f -> Tn.bg
         swipe <= 0f -> Jd.bg
         swipe < 1f -> lerp(Jd.bg, Tn.bg, swipe)
+        swipe >= 3f -> Nd.bg
+        swipe > 2f -> lerp(Kd.bg, Nd.bg, swipe - 2f)
         swipe >= 2f -> Kd.bg
         else -> lerp(Tn.bg, Kd.bg, swipe - 1f)
     }
@@ -400,6 +402,8 @@ fun CoverApp(act: MainActivity, tick: Int) {
             ) { page ->
             if (page == 0) {
                 SignalPage(act, locked = false, onHome = toHome, onUnlock = {})
+            } else if (page == 3) {
+                MapPage(prefs, active = { act.isVisible && pager.currentPage == 3 && screen == Screen.HOME })
             } else if (page == 2) {
                 DoPage(
                     act, prefs, hb, wx, shopCount,

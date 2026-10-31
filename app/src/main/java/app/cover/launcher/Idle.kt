@@ -44,7 +44,6 @@ import kotlinx.coroutines.delay
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlin.math.abs
 import kotlin.math.sqrt
 import kotlin.random.Random
 
@@ -103,7 +102,6 @@ fun IdleScreen(
     var frame by remember { mutableIntStateOf(0) }
     var clock by remember { mutableStateOf(LocalDateTime.now()) }
     var charging by remember { mutableStateOf(isCharging(ctx)) }
-    var flatAndStill by remember { mutableStateOf(false) }
     val startedAt = remember { System.currentTimeMillis() }
 
     // ~15 fps is plenty for text effects and kind to the battery.
@@ -126,12 +124,11 @@ fun IdleScreen(
         }
     }
 
-    // Accelerometer: lying flat and still keeps it awake; a pick-up wakes the launcher.
+    // Accelerometer: a pick-up (a real jolt, not a hand's wobble) wakes the launcher.
     DisposableEffect(Unit) {
         val sm = ctx.getSystemService(SensorManager::class.java)
         val acc = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         var last: FloatArray? = null
-        var stillSince = System.currentTimeMillis()
         val listener = object : SensorEventListener {
             override fun onSensorChanged(e: SensorEvent) {
                 val v = e.values
@@ -143,13 +140,10 @@ fun IdleScreen(
                 val dz = v[2] - prev[2]
                 val jolt = sqrt(dx * dx + dy * dy + dz * dz)
                 val now = System.currentTimeMillis()
-                if (jolt > 1.8f) {
-                    stillSince = now
+                if (jolt > 3f) {
                     // Ignore the first moment so the tap that ended typing doesn't count as a pick-up.
                     if (now - startedAt > 1500) wake()
                 }
-                // Gravity along the screen's axis means it's lying on a surface (which side the sensor sees varies by fold).
-                flatAndStill = abs(v[2]) > 8.5f && now - stillSince > 2000
             }
 
             override fun onAccuracyChanged(s: Sensor?, a: Int) {}
@@ -158,9 +152,10 @@ fun IdleScreen(
         onDispose { sm?.unregisterListener(listener) }
     }
 
-    // Hold the screen on only when it makes sense, and never forever off the charger.
+    // Keep the screen on while it runs: always on the charger, otherwise for up to 10 minutes above 20%.
+    // After that the cover's own timeout takes over as normal.
     val elapsed = clock.let { System.currentTimeMillis() - startedAt }
-    val holdOn = charging || (flatAndStill && battery > MIN_BATTERY && elapsed < AWAKE_CAP_MS)
+    val holdOn = charging || (battery > MIN_BATTERY && elapsed < AWAKE_CAP_MS)
     DisposableEffect(holdOn) {
         val w = act.window
         if (holdOn) w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -229,7 +224,11 @@ fun IdleScreen(
             )
         }
         BasicText(
-            "jake@flip ~ idle · " + fx.name.lowercase() + if (charging) " · ⚡" else "",
+            "jake@flip ~ idle · " + fx.name.lowercase() + when {
+                charging -> " · ⚡ awake"
+                holdOn -> " · awake ${((AWAKE_CAP_MS - elapsed) / 60_000) + 1}m"
+                else -> " · sleeps soon"
+            },
             Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
             style = Body.copy(color = Tn.dim, fontSize = 11.sp),
         )
