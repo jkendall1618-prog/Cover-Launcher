@@ -13,6 +13,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -54,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -216,6 +219,10 @@ fun CoverApp(act: MainActivity, tick: Int) {
     var briefBusy by remember { mutableStateOf(false) }
     var briefError by remember { mutableStateOf<String?>(null) }
 
+    // Screensaver: starts after page 1 sits untouched; any touch resets the clock.
+    var idle by remember { mutableStateOf(false) }
+    var lastTouch by remember { mutableLongStateOf(System.currentTimeMillis()) }
+
     fun refresh() {
         scope.launch {
             apps = withContext(Dispatchers.IO) { Apps.load(ctx) }
@@ -274,6 +281,8 @@ fun CoverApp(act: MainActivity, tick: Int) {
 
     LaunchedEffect(tick) {
         query = ""
+        idle = false
+        lastTouch = System.currentTimeMillis()
         // Back after a while away: open on page 1, like a home screen. A quick hop out
         // (a timer, Spotify, Wallet) returns to wherever you were.
         if (screen == Screen.HOME && act.awayFor() > 30_000L) pager.scrollToPage(1)
@@ -303,6 +312,17 @@ fun CoverApp(act: MainActivity, tick: Int) {
         }
     }
     val lockView = locked && SignalLock.overLock(ctx)
+
+    // Only page 1, at rest: not typing, not on another page or screen, not the locked Signal view.
+    val lockNow by rememberUpdatedState(lockView)
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (!idle && act.isVisible && !lockNow && screen == Screen.HOME && query.isEmpty() &&
+                pager.currentPage == 1 && System.currentTimeMillis() - lastTouch > IDLE_AFTER_MS
+            ) idle = true
+            delay(1000)
+        }
+    }
 
     // Auto-launch as soon as the letters narrow it to one thing.
     LaunchedEffect(query) {
@@ -337,7 +357,19 @@ fun CoverApp(act: MainActivity, tick: Int) {
     }
     val toHome: () -> Unit = { scope.launch { pager.animateScrollToPage(1) } }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            // Watch every touch without taking it from the pages underneath.
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        awaitPointerEvent(PointerEventPass.Initial)
+                        lastTouch = System.currentTimeMillis()
+                    }
+                }
+            }
+    ) {
     Box(
         Modifier
             .fillMaxSize()
@@ -479,6 +511,17 @@ fun CoverApp(act: MainActivity, tick: Int) {
                 )
             }
         }
+    }
+    // Screensaver over page 1. Tap, back or a pick-up returns to page 1 as it was.
+    AnimatedVisibility(
+        visible = idle && !lockView,
+        enter = fadeIn(tween(400)),
+        exit = fadeOut(tween(150)),
+    ) {
+        IdleScreen(act, events, tasks, media, battery, onWake = {
+            idle = false
+            lastTouch = System.currentTimeMillis()
+        })
     }
     }
 }
