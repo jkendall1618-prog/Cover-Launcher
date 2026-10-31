@@ -261,8 +261,8 @@ object Drive {
     /** Current crashes within ~300 m of the route. */
     private fun crashesNear(prefs: Prefs, route: List<Pair<Double, Double>>): List<String> {
         if (route.isEmpty()) return emptyList()
-        val key = prefs.get(Prefs.QLDT_KEY) ?: QLDT_PUBLIC
-        val feats = JSONObject(fetch("https://api.qldtraffic.qld.gov.au/v2/events?apikey=$key")).optJSONArray("features") ?: return emptyList()
+        // Shared with the map page and cached, so the two don't double up on QLDTraffic.
+        val feats = QldEvents.features(prefs)
         val minLat = route.minOf { it.first } - 0.01
         val maxLat = route.maxOf { it.first } + 0.01
         val minLon = route.minOf { it.second } - 0.01
