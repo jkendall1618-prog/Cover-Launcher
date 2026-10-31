@@ -30,6 +30,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
@@ -212,6 +213,47 @@ data class Pass(
     val from: String, val to: String,
 )
 
+/**
+ * QLDTraffic's events feed, shared by the map and page 5's drive so they don't each hit it.
+ * Kept for 5 minutes; after a "rate limited" it waits as long as asked (15 minutes if not told).
+ */
+object QldEvents {
+    private var body: String? = null
+    private var at = 0L
+    private var blockedUntil = 0L
+    private const val KEEP = 5 * 60_000L
+
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    @Synchronized
+    fun features(prefs: Prefs): JSONArray {
+        val now = System.currentTimeMillis()
+        val fresh = body?.takeIf { now - at < KEEP }
+        val text = fresh ?: run {
+            if (now < blockedUntil) {
+                // Keep showing the last good copy while we wait, if there is one.
+                body ?: throw IllegalStateException("rate limited, retry ${hhmm(blockedUntil)}")
+            } else {
+                val key = prefs.get(Prefs.QLDT_KEY) ?: Drive.QLDT_PUBLIC
+                http.newCall(Request.Builder().url("https://api.qldtraffic.qld.gov.au/v2/events?apikey=$key").build()).execute().use { r ->
+                    if (r.code == 429) {
+                        val wait = r.header("Retry-After")?.toLongOrNull()?.times(1000) ?: (15 * 60_000L)
+                        blockedUntil = now + wait.coerceIn(60_000L, 60 * 60_000L)
+                        body ?: throw IllegalStateException("rate limited, retry ${hhmm(blockedUntil)}")
+                    } else {
+                        if (!r.isSuccessful) throw HttpError(r.code)
+                        r.body?.string().orEmpty().also { body = it; at = now }
+                    }
+                }
+            }
+        }
+        return JSONObject(text).optJSONArray("features") ?: JSONArray()
+    }
+}
+
 /** Keys this page needs, kept with the others in Prefs. */
 object MapKeys {
     const val N2YO = "n2yo_key"
@@ -232,7 +274,7 @@ object Sky {
     var passesAt = 0L
 
     private const val PLANES_EVERY = 15_000L
-    private const val CRASHES_EVERY = 2 * 60_000L
+    private const val CRASHES_EVERY = 5 * 60_000L
     private const val FIRES_EVERY = 20 * 60_000L
     private const val PASSES_EVERY = 6 * 60 * 60_000L
 
@@ -333,9 +375,7 @@ object Sky {
     // ----- crashes: QLDTraffic, the same feed page 5 uses for the drive. -----
 
     private fun loadCrashes(prefs: Prefs): List<Crash> {
-        val key = prefs.get(Prefs.QLDT_KEY) ?: Drive.QLDT_PUBLIC
-        val feats = JSONObject(get("https://api.qldtraffic.qld.gov.au/v2/events?apikey=$key")).optJSONArray("features")
-            ?: return emptyList()
+        val feats = QldEvents.features(prefs)
         val out = ArrayList<Crash>()
         for (i in 0 until feats.length()) {
             val f = feats.optJSONObject(i) ?: continue
@@ -585,6 +625,7 @@ private fun DrawScope.drawMap(
     val oy = (size.height - h) / 2
     fun x(lon: Double) = ox + ((lon - Area.W) / (Area.E - Area.W)).toFloat() * w
     fun y(lat: Double) = oy + ((Area.N - lat) / (Area.N - Area.S)).toFloat() * h
+    clipRect(ox, oy, ox + w, oy + h) {
 
     // The coastline layer never changes, so draw it once per size and reuse it.
     val bw = size.width.toInt().coerceAtLeast(1)
@@ -701,6 +742,7 @@ private fun DrawScope.drawMap(
             drawCircle(Nd.snow, 10.dp.toPx(), p, style = androidx.compose.ui.graphics.drawscope.Stroke(1.dp.toPx()))
             if (s is Mark.Air) glyph(paint, s.p.call.lowercase(), p.x, p.y - 15.dp.toPx(), Nd.snow, 10f)
         }
+    }
     }
 }
 
