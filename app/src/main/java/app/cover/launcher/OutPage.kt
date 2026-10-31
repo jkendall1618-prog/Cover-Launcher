@@ -82,6 +82,17 @@ private fun play(act: Activity, uri: String) {
     }
 }
 
+/** Opens the album's own page in Spotify (no auto-play). Falls back to the web link if Spotify won't take the URI. */
+private fun openAlbum(act: Activity, uri: String) {
+    if (uri.isBlank()) {
+        Toast.makeText(act, "no link for that one", Toast.LENGTH_SHORT).show(); return
+    }
+    if (Actions.startHere(act, Intent(Intent.ACTION_VIEW, Uri.parse(uri)).setPackage(Actions.SPOTIFY))) return
+    // spotify:album:ID -> https://open.spotify.com/album/ID
+    val web = uri.removePrefix("spotify:").replace(':', '/').let { "https://open.spotify.com/$it" }
+    openUrl(act, web)
+}
+
 /** Fetches releases and gigs in the background; survives the page closing. MusicFeed decides when the next one is due. */
 fun refreshMusic(act: MainActivity, prefs: Prefs, force: Boolean = false) {
     if (Out.musicBusy) return
@@ -182,7 +193,7 @@ fun OutPage(
             DriveQuad(act, Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            MusicQuad(Modifier.weight(1f), onMusic)
+            MusicQuad(act, Modifier.weight(1f), onMusic)
             ProgressQuad(now, Modifier.weight(1f))
         }
     }
@@ -253,7 +264,7 @@ private fun DriveQuad(act: Activity, modifier: Modifier) {
 }
 
 @Composable
-private fun MusicQuad(modifier: Modifier, onMusic: () -> Unit) {
+private fun MusicQuad(act: Activity, modifier: Modifier, onMusic: () -> Unit) {
     val m = Out.music
     Quad("music ↗", modifier, onClick = onMusic) {
         if (m == null) {
@@ -271,8 +282,11 @@ private fun MusicQuad(modifier: Modifier, onMusic: () -> Unit) {
         Spacer(Modifier.height(4.dp))
         val rel = m.releases.firstOrNull()
         if (rel != null) {
-            T("◉ new · " + ago(rel.date), color = Gb.aqua, size = 11, maxLines = 1)
-            T("${rel.artist} — ${rel.title}".lowercase(), color = Gb.fg, size = 12, maxLines = 2)
+            // Tapping the release goes straight to the album; the rest of the quarter still opens the music page.
+            Column(Modifier.fillMaxWidth().clickable { openAlbum(act, rel.uri) }) {
+                T("◉ new · " + ago(rel.date) + " ↗", color = Gb.aqua, size = 11, maxLines = 1)
+                T("${rel.artist} — ${rel.title}".lowercase(), color = Gb.fg, size = 12, maxLines = 2)
+            }
         } else if (m.pending > 0) {
             T("checking releases… ${m.pending} to go", color = Gb.gray, size = 11, maxLines = 1)
         } else {
@@ -355,13 +369,14 @@ fun MusicScreen(act: MainActivity, prefs: Prefs, onBack: () -> Unit) {
                 item { T(msg, color = Gb.gray, size = 12) }
             } else {
                 items(m.releases) { r ->
-                    Row(Modifier.fillMaxWidth().clickable { play(act, r.uri) }.padding(vertical = 3.dp)) {
+                    Row(Modifier.fillMaxWidth().clickable { openAlbum(act, r.uri) }.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                         T(agoShort(r.date).padEnd(5), color = Gb.aqua, size = 12)
                         Column(Modifier.weight(1f)) {
                             T(r.title.lowercase(), color = Gb.fg, size = 12, maxLines = 1)
                             T(r.artist.lowercase() + if (r.single) " · single" else "", color = Gb.gray, size = 11, maxLines = 1)
                         }
-                        T("▶", color = Gb.green, size = 12)
+                        // ▶ keeps the old behaviour: play it without leaving cover.
+                        T("▶", Modifier.clickable { play(act, r.uri) }.padding(horizontal = 8.dp, vertical = 4.dp), color = Gb.green, size = 12)
                     }
                 }
                 if (m.pending > 0) item { T("${m.pending} artists still to check", color = Gb.gray, size = 11) }
