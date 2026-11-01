@@ -1,16 +1,20 @@
 package app.cover.launcher
 
 import android.app.KeyguardManager
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.view.Display
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -74,7 +78,7 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-enum class Screen { HOME, CHAT, SETTINGS, PEOPLE, SHOP, BRIEF, NOW, OUT, MUSIC }
+enum class Screen { HOME, CHAT, SETTINGS, PEOPLE, SHOP, BRIEF, NOW, OUT, MUSIC, CAL }
 
 /** Screens that slide over the pager rather than replacing it. */
 private val OVERLAYS = setOf(Screen.NOW, Screen.OUT, Screen.MUSIC)
@@ -193,10 +197,14 @@ fun CoverApp(act: MainActivity, tick: Int) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     val hb = remember { Homebase(prefs) }
-    val claude = remember { Claude(prefs) }
+    val claude = remember {
+        Claude(prefs, ToolRunner { name, input -> CalendarTools.run(ctx, prefs, name, input) })
+    }
     val scope = rememberCoroutineScope()
 
     var screen by remember { mutableStateOf(Screen.HOME) }
+    // Calendar screen: opened from "＋ add" it starts with the keyboard up, from the tile it doesn't.
+    var calFocus by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var apps by remember { mutableStateOf(emptyList<Entry>()) }
     var events by remember { mutableStateOf(emptyList<Event>()) }
@@ -206,6 +214,30 @@ fun CoverApp(act: MainActivity, tick: Int) {
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     var battery by remember { mutableIntStateOf(0) }
     val chat = remember { mutableStateListOf<Turn>() }
+
+    // Dictate one line into the log, with the phone shut: the mic on page 1, next to ask claude. It saves
+    // into the inbox folder picked in cfg, one dated note per entry, the same as page 2's capture row.
+    val logMic = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { text ->
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { runCatching { Actions.capture(ctx, prefs, text) } }
+                val msg = r.exceptionOrNull()?.message?.let { "log: $it" } ?: "logged ✓"
+                Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun listenLog() {
+        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-AU")
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "captain's log")
+        try {
+            logMic.launch(i)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(ctx, "no voice input on this phone", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // Page 2 state
     // Pages: 0 Signal · 1 home (page 1) · 2 do (page 2) · 3 map
@@ -393,6 +425,10 @@ fun CoverApp(act: MainActivity, tick: Int) {
                 refresh()
             })
             Screen.BRIEF -> BriefScreen(brief, briefBusy, briefError, onBack = { screen = Screen.HOME }, onAgain = { runBrief() })
+            Screen.CAL -> CalScreen(hb, calFocus, onBack = {
+                screen = Screen.HOME
+                refresh()
+            })
             // Page 4 slides down over the pager, which stays put underneath.
             Screen.HOME, Screen.NOW, Screen.OUT, Screen.MUSIC -> HorizontalPager(
                 state = pager,
@@ -428,7 +464,10 @@ fun CoverApp(act: MainActivity, tick: Int) {
             ) {
                 StatusBar(now, battery, onCfg = { screen = Screen.SETTINGS })
                 if (query.isEmpty()) {
-                    CalTile(events, CalendarRepo.hasAccess(ctx))
+                    CalTile(events, CalendarRepo.hasAccess(ctx)) { typing ->
+                        calFocus = typing
+                        screen = Screen.CAL
+                    }
                     Row(
                         Modifier.fillMaxWidth().height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -446,11 +485,24 @@ fun CoverApp(act: MainActivity, tick: Int) {
                         )
                         PlayTile(media, Media.hasAccess(ctx), Modifier.weight(1f).fillMaxHeight())
                     }
-                    Tile(onClick = { screen = Screen.CHAT }) {
-                        Row {
-                            T("❯ ", color = Tn.orange)
-                            T("ask claude")
-                            T("_", color = Tn.dim)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Tile(onClick = { screen = Screen.CHAT }, modifier = Modifier.weight(1f)) {
+                            Row {
+                                T("❯ ", color = Tn.orange)
+                                T("ask claude")
+                                T("_", color = Tn.dim)
+                            }
+                        }
+                        // One tap to dictate a line into the log, with the phone shut.
+                        Tile(onClick = { listenLog() }, modifier = Modifier.weight(1f)) {
+                            Row {
+                                T("● ", color = Tn.green)
+                                T("log")
+                                T(" · mic", color = Tn.dim)
+                            }
                         }
                     }
                 } else {
@@ -580,17 +632,23 @@ fun StatusBar(now: LocalDateTime, battery: Int, onCfg: () -> Unit) {
 }
 
 @Composable
-fun CalTile(events: List<Event>, hasAccess: Boolean) {
-    Tile(label = "cal", accent = Tn.blue) {
+fun CalTile(events: List<Event>, hasAccess: Boolean, onOpen: (typing: Boolean) -> Unit) {
+    Tile(accent = Tn.blue, onClick = { onOpen(false) }) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            T("cal", color = Tn.dim, size = 11)
+            Spacer(Modifier.weight(1f))
+            T("＋ add", Modifier.clickable { onOpen(true) }.padding(start = 12.dp), color = Tn.blue, size = 11)
+        }
         when {
-            !hasAccess -> T("grant calendar in cfg", color = Tn.dim)
-            events.isEmpty() -> T("nothing this week", color = Tn.dim)
-            else -> events.forEach { e ->
+            // Events added from cover show here even before calendar access is granted.
+            events.isNotEmpty() -> events.forEach { e ->
                 Row {
                     T(e.whenLabel.trimEnd().padEnd(11), color = Tn.blue)
                     T(e.title, maxLines = 1)
                 }
             }
+            !hasAccess -> T("grant calendar in cfg", color = Tn.dim)
+            else -> T("nothing this week", color = Tn.dim)
         }
     }
 }
