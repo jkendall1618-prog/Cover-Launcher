@@ -55,5 +55,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.security:security-crypto:1.0.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("net.sf.biweekly:biweekly:0.6.8")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }
