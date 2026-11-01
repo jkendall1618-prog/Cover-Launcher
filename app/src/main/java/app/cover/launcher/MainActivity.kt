@@ -1,16 +1,20 @@
 package app.cover.launcher
 
 import android.app.KeyguardManager
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.res.Configuration
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.view.Display
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -193,7 +197,9 @@ fun CoverApp(act: MainActivity, tick: Int) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     val hb = remember { Homebase(prefs) }
-    val claude = remember { Claude(prefs) }
+    val claude = remember {
+        Claude(prefs, ToolRunner { name, input -> CalendarTools.run(ctx, prefs, name, input) })
+    }
     val scope = rememberCoroutineScope()
 
     var screen by remember { mutableStateOf(Screen.HOME) }
@@ -206,6 +212,30 @@ fun CoverApp(act: MainActivity, tick: Int) {
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     var battery by remember { mutableIntStateOf(0) }
     val chat = remember { mutableStateListOf<Turn>() }
+
+    // Dictate one line into the log, with the phone shut: the mic on page 1, next to ask claude. It saves
+    // into the inbox folder picked in cfg, one dated note per entry, the same as page 2's capture row.
+    val logMic = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()?.let { text ->
+            scope.launch {
+                val r = withContext(Dispatchers.IO) { runCatching { Actions.capture(ctx, prefs, text) } }
+                val msg = r.exceptionOrNull()?.message?.let { "log: $it" } ?: "logged ✓"
+                Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun listenLog() {
+        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-AU")
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "captain's log")
+        try {
+            logMic.launch(i)
+        } catch (e: ActivityNotFoundException) {
+            Toast.makeText(ctx, "no voice input on this phone", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     // Page 2 state
     // Pages: 0 Signal · 1 home (page 1) · 2 do (page 2) · 3 map
@@ -446,11 +476,24 @@ fun CoverApp(act: MainActivity, tick: Int) {
                         )
                         PlayTile(media, Media.hasAccess(ctx), Modifier.weight(1f).fillMaxHeight())
                     }
-                    Tile(onClick = { screen = Screen.CHAT }) {
-                        Row {
-                            T("❯ ", color = Tn.orange)
-                            T("ask claude")
-                            T("_", color = Tn.dim)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Tile(onClick = { screen = Screen.CHAT }, modifier = Modifier.weight(1f)) {
+                            Row {
+                                T("❯ ", color = Tn.orange)
+                                T("ask claude")
+                                T("_", color = Tn.dim)
+                            }
+                        }
+                        // One tap to dictate a line into the log, with the phone shut.
+                        Tile(onClick = { listenLog() }, modifier = Modifier.weight(1f)) {
+                            Row {
+                                T("● ", color = Tn.green)
+                                T("log")
+                                T(" · mic", color = Tn.dim)
+                            }
                         }
                     }
                 } else {

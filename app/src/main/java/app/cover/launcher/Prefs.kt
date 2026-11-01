@@ -49,6 +49,8 @@ class Prefs(context: Context) {
         const val HB_REFRESH = "hb_refresh"
         const val HB_EXPIRES = "hb_expires"
         const val HB_USER = "hb_user"
+        /** Homebase's iCalendar feed link, the one ICSx⁵ subscribes to. Encrypted like the rest. */
+        const val HB_ICS = "hb_ics"
         const val ANTHROPIC_KEY = "anthropic_key"
 
         // Page 2

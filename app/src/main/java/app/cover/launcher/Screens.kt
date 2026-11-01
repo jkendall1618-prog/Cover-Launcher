@@ -151,6 +151,8 @@ fun SettingsScreen(prefs: Prefs, hb: Homebase, claude: Claude, tick: Int, onBack
     var signedIn by remember { mutableStateOf(hb.signedIn) }
     var key by remember { mutableStateOf("") }
     var hasKey by remember { mutableStateOf(claude.hasKey) }
+    var feed by remember { mutableStateOf("") }
+    var hasFeed by remember { mutableStateOf(prefs.get(Prefs.HB_ICS) != null) }
 
     val calPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { perm++ }
 
@@ -206,6 +208,22 @@ fun SettingsScreen(prefs: Prefs, hb: Homebase, claude: Claude, tick: Int, onBack
                 }
             }
             hbStatus?.let { T(it, color = Tn.red) }
+
+            Spacer(Modifier.height(8.dp))
+            T(if (hasFeed) "calendar feed saved" else "calendar feed", color = if (hasFeed) Tn.green else Tn.dim, size = 11)
+            Field(feed, { feed = it }, "paste Homebase's ics link", Modifier.fillMaxWidth(), secret = true)
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Btn("save feed", Tn.blue) {
+                    if (feed.isNotBlank()) {
+                        prefs.put(Prefs.HB_ICS to feed.trim())
+                        feed = ""
+                        hasFeed = true
+                    }
+                }
+                if (hasFeed) Btn("remove", Tn.red) { prefs.put(Prefs.HB_ICS to null); hasFeed = false }
+            }
+            T("lets claude answer date questions from homebase itself", color = Tn.dim, size = 11, maxLines = 2)
         }
 
         Tile(label = "claude") {

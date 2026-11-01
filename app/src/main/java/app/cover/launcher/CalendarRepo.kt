@@ -60,6 +60,49 @@ object CalendarRepo {
         return out
     }
 
+    /** Instances overlapping [from, to), with enough detail for Claude's calendar tool. */
+    fun events(ctx: Context, from: Instant, to: Instant, limit: Int = 200): List<CalEvent> {
+        if (!hasAccess(ctx)) return emptyList()
+        val uri = CalendarContract.Instances.CONTENT_URI.buildUpon()
+        ContentUris.appendId(uri, from.toEpochMilli())
+        ContentUris.appendId(uri, to.toEpochMilli())
+        val projection = arrayOf(
+            CalendarContract.Instances.TITLE,
+            CalendarContract.Instances.BEGIN,
+            CalendarContract.Instances.END,
+            CalendarContract.Instances.ALL_DAY,
+            CalendarContract.Instances.EVENT_LOCATION,
+            CalendarContract.Instances.CALENDAR_DISPLAY_NAME,
+        )
+        val out = mutableListOf<CalEvent>()
+        runCatching {
+            ctx.contentResolver.query(
+                uri.build(), projection, "${CalendarContract.Instances.VISIBLE}=1", null,
+                "${CalendarContract.Instances.BEGIN} ASC",
+            )?.use { c ->
+                while (c.moveToNext() && out.size < limit) {
+                    val allDay = c.getInt(3) == 1
+                    out += CalEvent(
+                        start = if (allDay) allDayStart(c.getLong(1)) else Instant.ofEpochMilli(c.getLong(1)),
+                        end = if (allDay) allDayStart(c.getLong(2)) else Instant.ofEpochMilli(c.getLong(2)),
+                        allDay = allDay,
+                        title = c.getString(0) ?: "(untitled)",
+                        location = c.getString(4)?.takeIf { it.isNotBlank() },
+                        calendar = c.getString(5)?.takeIf { it.isNotBlank() },
+                    )
+                }
+            }
+        }
+        return out
+    }
+
+    /** Android stores an all-day event at UTC midnight; its date is what matters, not that instant. */
+    private fun allDayStart(ms: Long): Instant =
+        Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC)
+            .toLocalDate()
+            .atStartOfDay(ZoneId.systemDefault())
+            .toInstant()
+
     private val HM = DateTimeFormatter.ofPattern("HH:mm")
     private val DOW = DateTimeFormatter.ofPattern("EEE", Locale.ENGLISH)
 
