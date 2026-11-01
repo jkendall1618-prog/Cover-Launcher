@@ -40,5 +40,10 @@ class CalendarFeed(private val prefs: Prefs) {
         /** URL, when it was fetched, and the feed itself: one copy across the app. */
         @Volatile
         private var cache: Triple<String, Long, String>? = null
+
+        /** Drop the cached copy, e.g. after adding an event, so Claude sees it straight away. */
+        fun invalidate() {
+            cache = null
+        }
     }
 }

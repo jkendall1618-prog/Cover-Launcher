@@ -8,6 +8,10 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
 import java.time.Instant
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
 
 data class Task(
@@ -108,6 +112,67 @@ class Homebase(private val prefs: Prefs) {
         send("PATCH", "/rest/v1/tasks?id=eq.${t.id}", patch.toString())
     }
 
+    /** Members and people without logins, for turning "+jac" into Homebase's for_whom keys. */
+    fun household(): List<Whom> {
+        val out = mutableListOf<Whom>()
+        val members = JSONArray(get("/rest/v1/members?select=user_id,display_name"))
+        for (i in 0 until members.length()) {
+            val o = members.getJSONObject(i)
+            out += Whom(o.getString("user_id"), o.optString("display_name"))
+        }
+        val people = JSONArray(get("/rest/v1/people?select=id,name"))
+        for (i in 0 until people.length()) {
+            val o = people.getJSONObject(i)
+            out += Whom("p:" + o.getString("id"), o.optString("name"))
+        }
+        return out
+    }
+
+    val me: String? get() = prefs.get(Prefs.HB_USER)
+
+    /**
+     * Saves an event the way Homebase's own form does: household filled in by the database,
+     * all-day events running local midnight to midnight. Returns the new event's id for undo.
+     * Reminders come from Homebase's scheduler, which reads this table, so they work as normal.
+     */
+    fun addEvent(
+        title: String,
+        date: LocalDate,
+        start: LocalTime?,
+        minutes: Long,
+        allDay: Boolean,
+        location: String?,
+        forWhom: List<String>,
+        remind: String,
+    ): String {
+        val zone = ZoneId.systemDefault()
+        val begins: ZonedDateTime
+        val ends: ZonedDateTime
+        if (allDay || start == null) {
+            begins = date.atStartOfDay(zone)
+            ends = date.plusDays(1).atStartOfDay(zone)
+        } else {
+            begins = date.atTime(start).atZone(zone)
+            ends = begins.plusMinutes(minutes.coerceAtLeast(1))
+        }
+        val iso = DateTimeFormatter.ISO_OFFSET_DATE_TIME
+        val body = JSONObject()
+            .put("title", title.trim())
+            .put("starts_at", begins.format(iso))
+            .put("ends_at", ends.format(iso))
+            .put("all_day", allDay || start == null)
+            .put("for_whom", JSONArray(forWhom.ifEmpty { listOf("family") }))
+            .put("remind", remind)
+            .put("created_by", me ?: JSONObject.NULL)
+        if (!location.isNullOrBlank()) body.put("location", location.trim())
+        val text = send("POST", "/rest/v1/events?select=id", body.toString(), prefer = "return=representation")
+        return JSONArray(text).getJSONObject(0).getString("id")
+    }
+
+    fun deleteEvent(id: String) {
+        send("DELETE", "/rest/v1/events?id=eq.$id", null)
+    }
+
     companion object {
         const val URL = "https://jrwjfbrkwhvliuggkdka.supabase.co"
         const val KEY = "sb_publishable_wjVj98zIE9PRXApxC2JinA_NqNA1xnM"
@@ -168,12 +233,12 @@ class Homebase(private val prefs: Prefs) {
 
     private fun get(path: String): String = send("GET", path, null)
 
-    private fun send(method: String, path: String, body: String?): String {
+    private fun send(method: String, path: String, body: String?, prefer: String = "return=minimal"): String {
         val req = Request.Builder()
             .url(URL + path)
             .header("apikey", KEY)
             .header("Authorization", "Bearer " + token())
-            .header("Prefer", "return=minimal")
+            .header("Prefer", prefer)
             .method(method, body?.toRequestBody(json))
             .build()
         http.newCall(req).execute().use { r ->
